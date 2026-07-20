@@ -50,15 +50,21 @@ Socketify’s **Pulse** layer keeps the connection pulsing — Ripple turns that
 
 ## Quick start
 
+### One command
+
+```bash
+./run.sh
+# → http://localhost:8080
+```
+
+`run.sh` installs/builds the React app, compiles the C++ server, stages `web/`, and starts listening.
+
 ### As a Socketify example (recommended)
 
 ```bash
 git clone --recurse-submodules https://github.com/MSaLeHNYM/Socketify.git
 cd Socketify
-cmake -S . -B build -DSOCKETIFY_BUILD_EXAMPLES=ON
-cmake --build build -j"$(nproc)" --target example_ripple
-cd build/examples/ripple && ./ripple
-# → http://localhost:8080
+./scripts/run_examples.sh ripple   # delegates to examples/ripple/run.sh
 ```
 
 If you already cloned Socketify without submodules:
@@ -70,12 +76,8 @@ git submodule update --init --recursive
 ### Standalone (next to Socketify)
 
 ```bash
-# expect ../Socketify on disk
-cd Ripple   # this repo
-cd frontend && npm i && npm run build && cd ..
-cmake -B build -DSOCKETIFY_BUILD_EXAMPLES=OFF -DSOCKETIFY_BUILD_TESTS=OFF
-cmake --build build -j"$(nproc)"
-./build/ripple
+# expect ../Socketify on disk, or an installed Socketify package
+./run.sh
 ```
 
 ## Dev mode (Vite + hot reload)
