@@ -36,21 +36,12 @@ set -eu
 OUT="${1:?}"
 DIST="${2:?}"
 mkdir -p "${OUT}"
-if [ -f "${DIST}/index.html" ]; then
+if [ -f "${DIST}/index.html" ] && ! grep -q 'Build the frontend' "${DIST}/index.html"; then
   cp -a "${DIST}/." "${OUT}/"
 else
-  cat > "${OUT}/index.html" <<'HTML'
-<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>Ripple</title></head>
-<body style="font-family:system-ui;margin:2rem;max-width:40rem">
-  <h1>Build the frontend</h1>
-  <pre>cd frontend
-npm i && npm run build</pre>
-  <p>Then rebuild <code>ripple</code>.</p>
-</body>
-</html>
-HTML
+  echo "ripple: frontend/dist missing — run ./run.sh (or: cd frontend && npm i && npm run build)" >&2
+  printf '%s\n' '<!doctype html><meta charset=utf-8><title>Ripple</title>' \
+    '<p>Frontend not staged. Run <code>./run.sh</code> from the Ripple repo.</p>' > "${OUT}/index.html"
 fi
 ]=])
 file(CHMOD "${_ripple_stage}" PERMISSIONS

@@ -10,12 +10,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SOCKETIFY_ROOT=""
 BUILD_DIR=""
 SKIP_NPM=0
+PORT=8080
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --socketify-root) SOCKETIFY_ROOT="${2:?}"; shift 2 ;;
     --build-dir)      BUILD_DIR="${2:?}"; shift 2 ;;
     --skip-npm)       SKIP_NPM=1; shift ;;
+    --port)           PORT="${2:?}"; shift 2 ;;
     -h|--help)
       sed -n '2,8p' "$0"
       exit 0
@@ -59,6 +61,10 @@ if [[ ! -f "${ROOT}/frontend/dist/index.html" ]]; then
   echo "error: frontend/dist/index.html missing after build" >&2
   exit 1
 fi
+if grep -q 'Build the frontend' "${ROOT}/frontend/dist/index.html"; then
+  echo "error: frontend/dist still looks like the CMake placeholder — rebuild failed" >&2
+  exit 1
+fi
 
 # ---- C++ binary ----
 echo "==> Building server → ${BUILD_DIR}"
@@ -94,8 +100,37 @@ echo "==> Staging web/ next to binary"
 rm -rf "${BIN_DIR}/web"
 mkdir -p "${BIN_DIR}/web" "${BIN_DIR}/data"
 cp -a "${ROOT}/frontend/dist/." "${BIN_DIR}/web/"
+if grep -q 'Build the frontend' "${BIN_DIR}/web/index.html"; then
+  echo "error: staged web/index.html is still the placeholder" >&2
+  exit 1
+fi
+
+# Socketify uses SO_REUSEPORT — a stale ./ripple can keep serving old HTML on :8080.
+free_port() {
+  local port="$1"
+  local pids=""
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    pids="$(lsof -t -iTCP:"${port}" -sTCP:LISTEN 2>/dev/null || true)"
+  fi
+  if [[ -z "${pids}" ]] && command -v ss >/dev/null 2>&1; then
+    pids="$(ss -tlnp "sport = :${port}" 2>/dev/null | sed -n 's/.*pid=\([0-9]\+\).*/\1/p' | sort -u)"
+  fi
+  if [[ -n "${pids}" ]]; then
+    echo "==> Freeing :${port} (pids: ${pids})"
+    # shellcheck disable=SC2086
+    kill ${pids} 2>/dev/null || true
+    sleep 0.4
+    # shellcheck disable=SC2086
+    kill -9 ${pids} 2>/dev/null || true
+  fi
+}
+echo "==> Ensuring port ${PORT} is free"
+free_port "${PORT}"
 
 echo "==> Running ${BIN} (Ctrl-C to stop)"
-echo "    http://localhost:8080"
+echo "    http://localhost:${PORT}"
 cd "${BIN_DIR}"
 exec "${BIN}"

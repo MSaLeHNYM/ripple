@@ -324,11 +324,21 @@ void broadcast_typing(pulse::Hub& hub, Database& db, std::int64_t chat_id,
     broadcast_to_members(hub, db, chat_id, evt, user_id);
 }
 
+std::string exe_dir() {
+    std::error_code ec;
+    fs::path self = fs::read_symlink("/proc/self/exe", ec);
+    if (!ec) return self.parent_path().string();
+    return fs::current_path().string();
+}
+
+/** Prefer absolute web/ next to the binary so cwd / stale processes cannot confuse us. */
 std::string find_web_root() {
-    for (const char* cand : {"web", "frontend/dist", "../frontend/dist"}) {
-        if (fs::exists(fs::path(cand) / "index.html")) return cand;
+    const fs::path base = exe_dir();
+    for (const fs::path& cand : {base / "web", base / "frontend" / "dist",
+                                 fs::path("web"), fs::path("frontend") / "dist"}) {
+        if (fs::exists(cand / "index.html")) return fs::absolute(cand).string();
     }
-    return "web";
+    return fs::absolute(base / "web").string();
 }
 
 void json_error(Response& res, Status code, std::string_view msg) {
@@ -654,7 +664,15 @@ int main() {
 
     // ---- Static SPA ----
     const std::string web = find_web_root();
-    server.Use(static_files::serve(web, {.mount = "/", .fallthrough = true, .cache_max_age = 60}));
+    if (!fs::exists(fs::path(web) / "index.html")) {
+        std::fprintf(stderr,
+                     "error: UI not found at %s/index.html\n"
+                     "       run: ./run.sh   (builds frontend and stages web/)\n",
+                     web.c_str());
+        return 1;
+    }
+    // No long cache on HTML so rebuilds show up immediately.
+    server.Use(static_files::serve(web, {.mount = "/", .fallthrough = true, .cache_max_age = 0}));
 
     server.Get("/*path", [web](Request& req, Response& res) {
         const auto path = std::string(req.path());
@@ -664,16 +682,16 @@ int main() {
         }
         if (!res.send_file(web + "/index.html")) {
             res.status(Status::NotFound)
-                .html("<h1>Frontend not built</h1><p>Run: <code>cd frontend && npm i && "
-                      "npm run build</code></p>");
+                .html("<h1>Frontend not built</h1><p>Run: <code>./run.sh</code></p>");
         }
     });
 
     if (!server.Listen(8080)) {
         std::fprintf(stderr, "failed to start: %s\n", server.last_error().c_str());
+        std::fprintf(stderr, "hint: another process may own :8080 — ./run.sh frees it\n");
         return 1;
     }
-    std::printf("Ripple on http://localhost:8080\n");
+    std::printf("Ripple on http://localhost:8080  (web=%s)\n", web.c_str());
     server.Wait();
     return 0;
 }
