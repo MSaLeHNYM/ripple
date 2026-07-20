@@ -107,7 +107,7 @@ std::string now_iso() {
     const auto ms = duration_cast<milliseconds>(now.time_since_epoch()) % 1000;
     std::tm tm{};
     gmtime_r(&t, &tm);
-    char buf[40];
+    char buf[64];
     std::snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d.%03ldZ", tm.tm_year + 1900,
                   tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec,
                   static_cast<long>(ms.count()));
