@@ -1,0 +1,9 @@
+build/
+cmake-build-*/
+*.db
+*.db-journal
+web/
+data/
+.DS_Store
+frontend/node_modules/
+# Keep frontend/dist committed so the example runs without npm.
