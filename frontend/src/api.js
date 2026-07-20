@@ -55,10 +55,10 @@ export const api = {
 
   getMessages: (chatId) => request(`/api/chats/${chatId}/messages`),
 
-  sendMessage: (chatId, body) =>
+  sendMessage: (chatId, body, client_id) =>
     request(`/api/chats/${chatId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ body }),
+      body: JSON.stringify({ body, client_id }),
     }),
 
   setTyping: (chatId, typing) =>
@@ -66,28 +66,113 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ typing }),
     }),
+
+  markRead: (chatId, last_message_id) =>
+    request(`/api/chats/${chatId}/read`, {
+      method: 'POST',
+      body: JSON.stringify({ last_message_id }),
+    }),
 };
 
-export function createPulseSocket(onMessage, onOpen, onClose) {
-  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(`${protocol}//${window.location.host}/pulse`);
+/**
+ * Persistent Pulse WebSocket with exponential backoff reconnect.
+ * Returns { send, close, getSocket }.
+ */
+export function createPulseConnection({ onMessage, onStatus }) {
+  let ws = null;
+  let closed = false;
+  let attempt = 0;
+  let reconnectTimer = null;
 
-  ws.addEventListener('open', () => {
-    ws.send(JSON.stringify({ type: 'hello' }));
-    onOpen?.();
-  });
-
-  ws.addEventListener('message', (event) => {
-    try {
-      const data = JSON.parse(event.data);
-      onMessage(data);
-    } catch {
-      /* ignore malformed frames */
+  const clearReconnect = () => {
+    if (reconnectTimer != null) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
     }
+  };
+
+  const connect = () => {
+    if (closed) return;
+    clearReconnect();
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const socket = new WebSocket(`${protocol}//${window.location.host}/pulse`);
+    ws = socket;
+
+    socket.addEventListener('open', () => {
+      attempt = 0;
+      onStatus?.(true);
+      try {
+        socket.send(JSON.stringify({ type: 'hello' }));
+      } catch {
+        /* ignore */
+      }
+    });
+
+    socket.addEventListener('message', (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        onMessage?.(data);
+      } catch {
+        /* ignore malformed frames */
+      }
+    });
+
+    const scheduleReconnect = () => {
+      if (closed) return;
+      onStatus?.(false);
+      const delay = Math.min(8000, 500 * 2 ** attempt);
+      attempt += 1;
+      reconnectTimer = setTimeout(connect, delay);
+    };
+
+    socket.addEventListener('close', () => {
+      if (ws === socket) ws = null;
+      scheduleReconnect();
+    });
+
+    socket.addEventListener('error', () => {
+      try {
+        socket.close();
+      } catch {
+        /* ignore */
+      }
+    });
+  };
+
+  connect();
+
+  return {
+    send(payload) {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
+        return true;
+      }
+      return false;
+    },
+    isOpen() {
+      return ws?.readyState === WebSocket.OPEN;
+    },
+    close() {
+      closed = true;
+      clearReconnect();
+      try {
+        ws?.close();
+      } catch {
+        /* ignore */
+      }
+      ws = null;
+    },
+  };
+}
+
+/** @deprecated use createPulseConnection */
+export function createPulseSocket(onMessage, onOpen, onClose) {
+  return createPulseConnection({
+    onMessage,
+    onStatus: (connected) => {
+      if (connected) onOpen?.();
+      else onClose?.();
+    },
   });
-
-  ws.addEventListener('close', () => onClose?.());
-  ws.addEventListener('error', () => onClose?.());
-
-  return ws;
 }

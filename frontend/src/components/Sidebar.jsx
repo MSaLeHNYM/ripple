@@ -1,12 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.js';
-
-function chatTitle(chat, currentUserId) {
-  if (chat.title) return chat.title;
-  const members = chat.members ?? [];
-  const other = members.find((m) => m.id !== currentUserId);
-  return other?.display_name || other?.username || 'Direct Message';
-}
+import { useTheme } from '../theme.jsx';
+import { chatPeer, chatTitle, isGroupChat } from '../normalize.js';
 
 function chatPreview(chat) {
   const last = chat.last_message;
@@ -37,6 +32,7 @@ export default function Sidebar({
   onCreateGroup,
   onLogout,
 }) {
+  const { theme, toggleTheme } = useTheme();
   const [search, setSearch] = useState('');
   const [searchResults, setSearchResults] = useState([]);
   const [searching, setSearching] = useState(false);
@@ -98,9 +94,8 @@ export default function Sidebar({
   };
 
   const isUserOnline = (chat) => {
-    if (chat.type === 'group' || chat.is_group) return false;
-    const members = chat.members ?? [];
-    const other = members.find((m) => m.id !== user.id);
+    if (isGroupChat(chat)) return false;
+    const other = chatPeer(chat, user.id);
     return other ? onlineUsers.has(other.id) || onlineUsers.has(other.username) : false;
   };
 
@@ -118,9 +113,20 @@ export default function Sidebar({
         </div>
         <div className="sidebar-user">
           <span className="user-name">{user.display_name || user.username}</span>
-          <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>
-            Sign out
-          </button>
+          <div className="sidebar-header-actions">
+            <button
+              type="button"
+              className="theme-toggle"
+              onClick={toggleTheme}
+              aria-label={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+              title={theme === 'dark' ? 'Light mode' : 'Dark mode'}
+            >
+              {theme === 'dark' ? '☀' : '☾'}
+            </button>
+            <button type="button" className="btn btn-ghost btn-sm" onClick={onLogout}>
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 
@@ -172,7 +178,7 @@ export default function Sidebar({
               onClick={() => onSelectChat(chat.id)}
             >
               <span className="avatar">
-                {chat.type === 'group' || chat.is_group ? '👥' : initialsFromChat(chat, user.id)}
+                {isGroupChat(chat) ? 'G' : initialsFromChat(chat, user.id)}
               </span>
               <span className="chat-item-body">
                 <span className="chat-item-top">
@@ -181,6 +187,9 @@ export default function Sidebar({
                 </span>
                 <span className="chat-item-preview">{chatPreview(chat)}</span>
               </span>
+              {(chat.unread_count ?? 0) > 0 && (
+                <span className="unread-badge">{chat.unread_count > 99 ? '99+' : chat.unread_count}</span>
+              )}
               {isUserOnline(chat) && <span className="presence-dot online pulse" />}
             </button>
           </li>
@@ -265,8 +274,7 @@ function initials(user) {
 }
 
 function initialsFromChat(chat, userId) {
-  const members = chat.members ?? [];
-  const other = members.find((m) => m.id !== userId);
+  const other = chatPeer(chat, userId);
   if (other) return initials(other);
   return '?';
 }

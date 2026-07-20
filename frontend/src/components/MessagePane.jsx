@@ -1,12 +1,12 @@
 import { useEffect, useRef } from 'react';
 import Composer from './Composer.jsx';
-
-function chatTitle(chat, currentUserId) {
-  if (chat.title) return chat.title;
-  const members = chat.members ?? [];
-  const other = members.find((m) => m.id !== currentUserId);
-  return other?.display_name || other?.username || 'Direct Message';
-}
+import {
+  chatPeer,
+  chatTitle,
+  isGroupChat,
+  isOwnMessage,
+  messageSenderLabel,
+} from '../normalize.js';
 
 function formatMessageTime(iso) {
   if (!iso) return '';
@@ -14,11 +14,24 @@ function formatMessageTime(iso) {
 }
 
 function isOtherOnline(chat, currentUserId, onlineUsers) {
-  if (!chat || chat.type === 'group' || chat.is_group) return false;
-  const members = chat.members ?? [];
-  const other = members.find((m) => m.id !== currentUserId);
+  if (!chat || isGroupChat(chat)) return false;
+  const other = chatPeer(chat, currentUserId);
   if (!other) return false;
   return onlineUsers.has(other.id) || onlineUsers.has(other.username);
+}
+
+function receiptLabel(status) {
+  switch (status) {
+    case 'seen':
+      return '✓✓';
+    case 'delivered':
+      return '✓✓';
+    case 'sent':
+      return '✓';
+    case 'pending':
+    default:
+      return '…';
+  }
 }
 
 export default function MessagePane({
@@ -27,6 +40,7 @@ export default function MessagePane({
   currentUser,
   onlineUsers,
   typingUser,
+  receipts = {},
   error,
   onDismissError,
   onSend,
@@ -51,7 +65,8 @@ export default function MessagePane({
   }
 
   const online = isOtherOnline(chat, currentUser.id, onlineUsers);
-  const isGroup = chat.type === 'group' || chat.is_group;
+  const isGroup = isGroupChat(chat);
+  const memberCount = (chat.members ?? []).length;
 
   return (
     <main className="message-pane">
@@ -62,7 +77,7 @@ export default function MessagePane({
             {typingUser ? (
               <span className="typing-indicator">{typingUser} is typing…</span>
             ) : isGroup ? (
-              `${(chat.members ?? []).length} members`
+              `${memberCount} members`
             ) : online ? (
               <span className="online-label">
                 <span className="presence-dot online pulse" /> Online
@@ -85,9 +100,10 @@ export default function MessagePane({
 
       <ul className="message-list">
         {messages.map((msg, i) => {
-          const isOwn = msg.user_id === currentUser.id || msg.user?.id === currentUser.id;
-          const sender = msg.user?.display_name || msg.user?.username || msg.sender_name || 'Unknown';
+          const isOwn = isOwnMessage(msg, currentUser.id);
+          const sender = messageSenderLabel(msg);
           const showSender = isGroup && !isOwn;
+          const status = receipts[msg.id] || (msg.pending ? 'pending' : msg.receipt_status);
           return (
             <li
               key={msg.id ?? i}
@@ -96,7 +112,18 @@ export default function MessagePane({
               {showSender && <span className="message-sender">{sender}</span>}
               <div className="message-bubble">
                 <p>{msg.body}</p>
-                <time>{formatMessageTime(msg.created_at)}</time>
+                <div className="message-meta">
+                  <time>{formatMessageTime(msg.created_at)}</time>
+                  {isOwn && status && (
+                    <span
+                      className={`message-receipt${status === 'pending' ? ' pending' : ''}${status === 'seen' ? ' seen' : ''}`}
+                      title={status}
+                      aria-label={status}
+                    >
+                      {receiptLabel(status)}
+                    </span>
+                  )}
+                </div>
               </div>
             </li>
           );

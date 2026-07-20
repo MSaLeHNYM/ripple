@@ -70,6 +70,8 @@ struct ChatMember : Model<ChatMember> {
             .not_null()
             .integer("user_id")
             .not_null()
+            .integer("last_read_message_id")
+            .text("last_read_at")
             .foreign_key("chat_id", "chats", "id", true)
             .foreign_key("user_id", "users", "id", true)
             .index("idx_chat_members_unique", {"chat_id", "user_id"}, true);
@@ -93,6 +95,26 @@ struct Message : Model<Message> {
             .foreign_key("chat_id", "chats", "id", true)
             .foreign_key("sender_id", "users", "id", true)
             .index("idx_messages_chat", {"chat_id"});
+    }
+};
+
+struct MessageReceipt : Model<MessageReceipt> {
+    static constexpr std::string_view table = "message_receipts";
+    static Schema schema() {
+        return Schema::create(table)
+            .integer("id")
+            .primary()
+            .autoincrement()
+            .integer("message_id")
+            .not_null()
+            .integer("user_id")
+            .not_null()
+            .text("status")
+            .not_null()
+            .text("updated_at")
+            .foreign_key("message_id", "messages", "id", true)
+            .foreign_key("user_id", "users", "id", true)
+            .index("idx_message_receipts_unique", {"message_id", "user_id"}, true);
     }
 };
 
@@ -156,6 +178,14 @@ Middleware require_auth() {
     };
 }
 
+void ensure_column(Database& db, const char* table, const char* column, const char* decl) {
+    const auto rows = db.query(std::string("PRAGMA table_info(") + table + ")");
+    for (const auto& row : rows) {
+        if (row.at("name").get<std::string>() == column) return;
+    }
+    db.exec(std::string("ALTER TABLE ") + table + " ADD COLUMN " + column + " " + decl);
+}
+
 class Presence {
 public:
     void track(std::int64_t user_id, pulse::Channel ch) {
@@ -190,6 +220,15 @@ public:
         std::lock_guard<std::mutex> lk(mu_);
         auto it = user_channels_.find(user_id);
         return it != user_channels_.end() && !it->second.empty();
+    }
+
+    json online_user_ids() const {
+        std::lock_guard<std::mutex> lk(mu_);
+        json ids = json::array();
+        for (const auto& [uid, chs] : user_channels_) {
+            if (!chs.empty()) ids.push_back(uid);
+        }
+        return ids;
     }
 
 private:
@@ -241,22 +280,96 @@ std::optional<std::int64_t> find_dm_chat(Database& db, std::int64_t a, std::int6
     return rows.front().at("id").get<std::int64_t>();
 }
 
-json message_json(Database& db, const Presence& pres, const Row& row) {
+int receipt_rank(const std::string& status) {
+    if (status == "seen") return 3;
+    if (status == "delivered") return 2;
+    if (status == "sent") return 1;
+    return 0;
+}
+
+std::string aggregate_receipt_status(Database& db, std::int64_t message_id,
+                                     std::int64_t sender_id, std::int64_t chat_id) {
+    const auto members = chat_member_ids(db, chat_id);
+    int worst = 3;
+    bool any = false;
+    for (const auto mid : members) {
+        if (mid == sender_id) continue;
+        any = true;
+        const auto row = MessageReceipt::query(db)
+                             .where_eq("message_id", message_id)
+                             .where_eq("user_id", mid)
+                             .limit(1)
+                             .first();
+        const int rank = row ? receipt_rank(row->at("status").get<std::string>()) : 0;
+        if (rank < worst) worst = rank;
+    }
+    if (!any) return "sent";
+    if (worst >= 3) return "seen";
+    if (worst >= 2) return "delivered";
+    return "sent";
+}
+
+void upsert_receipt(Database& db, std::int64_t message_id, std::int64_t user_id,
+                    const std::string& status) {
+    const auto existing = MessageReceipt::query(db)
+                              .where_eq("message_id", message_id)
+                              .where_eq("user_id", user_id)
+                              .limit(1)
+                              .first();
+    const std::string ts = now_iso();
+    if (existing) {
+        const auto cur = existing->at("status").get<std::string>();
+        if (receipt_rank(status) <= receipt_rank(cur)) return;
+        MessageReceipt::query(db)
+            .where_eq("id", existing->at("id").get<std::int64_t>())
+            .update({{"status", status}, {"updated_at", ts}});
+    } else {
+        MessageReceipt::create(db, {{"message_id", message_id},
+                                    {"user_id", user_id},
+                                    {"status", status},
+                                    {"updated_at", ts}});
+    }
+}
+
+json message_json(Database& db, const Presence& pres, const Row& row,
+                  std::optional<std::int64_t> viewer_id = std::nullopt) {
     const auto sender_id = row.at("sender_id").get<std::int64_t>();
-    json j{{"id", row.at("id")},
-           {"chat_id", row.at("chat_id")},
+    const auto message_id = row.at("id").get<std::int64_t>();
+    const auto chat_id = row.at("chat_id").get<std::int64_t>();
+    json j{{"id", message_id},
+           {"chat_id", chat_id},
            {"sender_id", sender_id},
            {"body", row.at("body")},
            {"created_at", row.value("created_at", "")}};
     if (auto u = user_row(db, sender_id)) j["sender"] = user_public(db, pres, *u);
+    if (viewer_id && *viewer_id == sender_id) {
+        j["receipt_status"] = aggregate_receipt_status(db, message_id, sender_id, chat_id);
+    }
     return j;
+}
+
+std::int64_t unread_count_for(Database& db, std::int64_t chat_id, std::int64_t user_id,
+                              const Row& member_row) {
+    std::int64_t last_read = 0;
+    if (member_row.contains("last_read_message_id") &&
+        !member_row.at("last_read_message_id").is_null()) {
+        last_read = member_row.at("last_read_message_id").get<std::int64_t>();
+    }
+    const auto rows = db.query(
+        "SELECT COUNT(*) AS c FROM messages WHERE chat_id = ? AND id > ? AND sender_id != ?",
+        {chat_id, last_read, user_id});
+    if (rows.empty()) return 0;
+    return rows.front().at("c").get<std::int64_t>();
 }
 
 json chat_json(Database& db, const Presence& pres, const Row& chat_row,
                std::int64_t current_user_id) {
     const auto chat_id = chat_row.at("id").get<std::int64_t>();
+    const std::string kind = chat_row.at("kind").get<std::string>();
     json item{{"id", chat_id},
-              {"kind", chat_row.at("kind")},
+              {"kind", kind},
+              {"type", kind},
+              {"is_group", kind == "group"},
               {"title", chat_row.contains("title") && !chat_row.at("title").is_null()
                             ? chat_row.at("title")
                             : json(nullptr)},
@@ -264,17 +377,22 @@ json chat_json(Database& db, const Presence& pres, const Row& chat_row,
 
     const auto msgs =
         Message::query(db).where_eq("chat_id", chat_id).order_by("id", false).limit(1).get();
-    item["last_message"] = msgs.empty() ? json(nullptr) : message_json(db, pres, msgs.front());
+    item["last_message"] =
+        msgs.empty() ? json(nullptr) : message_json(db, pres, msgs.front(), current_user_id);
 
-    if (chat_row.at("kind").get<std::string>() == "dm") {
-        for (const auto& m : ChatMember::query(db).where_eq("chat_id", chat_id).get()) {
-            const auto mid = m.at("user_id").get<std::int64_t>();
-            if (mid != current_user_id) {
-                if (auto u = user_row(db, mid)) item["peer"] = user_public(db, pres, *u);
-                break;
-            }
+    json members = json::array();
+    std::optional<Row> my_membership;
+    for (const auto& m : ChatMember::query(db).where_eq("chat_id", chat_id).get()) {
+        const auto mid = m.at("user_id").get<std::int64_t>();
+        if (mid == current_user_id) my_membership = m;
+        if (auto u = user_row(db, mid)) members.push_back(user_public(db, pres, *u));
+        if (kind == "dm" && mid != current_user_id) {
+            if (auto u = user_row(db, mid)) item["peer"] = user_public(db, pres, *u);
         }
     }
+    item["members"] = members;
+    item["unread_count"] =
+        my_membership ? unread_count_for(db, chat_id, current_user_id, *my_membership) : 0;
     return item;
 }
 
@@ -285,18 +403,24 @@ void broadcast_presence(pulse::Hub& hub, const Presence& pres, Database& db,
                    {"user_id", user_id},
                    {"online", online_flag},
                    {"last_seen", now_iso()}};
-    const std::string payload = evt.dump();
-    hub.broadcast_text(payload);
+    hub.broadcast_text(evt.dump());
     (void)pres;
 }
 
-void broadcast_to_members(pulse::Hub& hub, Database& db, std::int64_t chat_id,
-                          const json& msg, std::int64_t exclude_user_id = 0) {
+void broadcast_to_members(pulse::Hub& hub, Database& db, std::int64_t chat_id, const json& msg,
+                          std::int64_t exclude_user_id = 0) {
     const std::string payload = msg.dump();
     for (const auto member_id : chat_member_ids(db, chat_id)) {
         if (member_id == exclude_user_id) continue;
         hub.to("user:" + std::to_string(member_id)).broadcast_text(payload);
     }
+}
+
+void notify_chat_created(pulse::Hub& hub, Database& db, const Presence& /*pres*/,
+                         std::int64_t chat_id, std::int64_t creator_id) {
+    const json evt{{"type", "chat"}, {"chat_id", chat_id}};
+    broadcast_to_members(hub, db, chat_id, evt, 0);
+    (void)creator_id;
 }
 
 std::shared_ptr<Message> persist_message(Database& db, std::int64_t chat_id,
@@ -307,21 +431,98 @@ std::shared_ptr<Message> persist_message(Database& db, std::int64_t chat_id,
                                 {"created_at", now_iso()}});
 }
 
+void mark_delivered_for_online(Database& db, pulse::Hub& hub, const Presence& pres,
+                               std::int64_t chat_id, std::int64_t message_id,
+                               std::int64_t sender_id) {
+    for (const auto member_id : chat_member_ids(db, chat_id)) {
+        if (member_id == sender_id) continue;
+        if (!pres.online(member_id)) continue;
+        upsert_receipt(db, message_id, member_id, "delivered");
+        const json evt{{"type", "receipt"},
+                       {"message_id", message_id},
+                       {"chat_id", chat_id},
+                       {"user_id", member_id},
+                       {"status", "delivered"}};
+        hub.to("user:" + std::to_string(sender_id)).broadcast_text(evt.dump());
+    }
+}
+
 json save_and_broadcast_message(Database& db, pulse::Hub& hub, const Presence& pres,
-                                std::int64_t chat_id, std::int64_t sender_id,
-                                std::string body) {
+                                std::int64_t chat_id, std::int64_t sender_id, std::string body,
+                                std::optional<std::string> client_id = std::nullopt) {
     const auto rec = persist_message(db, chat_id, sender_id, std::move(body));
-    json out = message_json(db, pres, rec->attrs());
+    json out = message_json(db, pres, rec->attrs(), sender_id);
     out["type"] = "message";
-    broadcast_to_members(hub, db, chat_id, out, sender_id);
+    out["receipt_status"] = "sent";
+    if (client_id) out["client_id"] = *client_id;
+
+    // Echo to everyone including sender (for optimistic reconcile).
+    broadcast_to_members(hub, db, chat_id, out, 0);
+    mark_delivered_for_online(db, hub, pres, chat_id, rec->id(), sender_id);
     return out;
 }
 
 void broadcast_typing(pulse::Hub& hub, Database& db, std::int64_t chat_id,
                       std::int64_t user_id, bool typing) {
-    const json evt{
-        {"type", "typing"}, {"chat_id", chat_id}, {"user_id", user_id}, {"typing", typing}};
+    std::string display_name = "Someone";
+    if (auto u = user_row(db, user_id)) {
+        display_name = u->value("display_name", u->value("username", "Someone"));
+    }
+    const json evt{{"type", "typing"},
+                   {"chat_id", chat_id},
+                   {"user_id", user_id},
+                   {"display_name", display_name},
+                   {"typing", typing}};
     broadcast_to_members(hub, db, chat_id, evt, user_id);
+}
+
+void mark_chat_read(Database& db, pulse::Hub& hub, std::int64_t chat_id, std::int64_t user_id,
+                    std::int64_t last_message_id) {
+    if (last_message_id <= 0) return;
+    const auto member = ChatMember::query(db)
+                            .where_eq("chat_id", chat_id)
+                            .where_eq("user_id", user_id)
+                            .limit(1)
+                            .first();
+    if (!member) return;
+
+    std::int64_t prev = 0;
+    if (member->contains("last_read_message_id") &&
+        !member->at("last_read_message_id").is_null()) {
+        prev = member->at("last_read_message_id").get<std::int64_t>();
+    }
+    if (last_message_id < prev) last_message_id = prev;
+
+    ChatMember::query(db)
+        .where_eq("id", member->at("id").get<std::int64_t>())
+        .update({{"last_read_message_id", last_message_id}, {"last_read_at", now_iso()}});
+
+    const auto rows = db.query(
+        "SELECT id, sender_id FROM messages WHERE chat_id = ? AND id <= ? AND sender_id != ?",
+        {chat_id, last_message_id, user_id});
+
+    std::unordered_set<std::int64_t> notify_senders;
+    for (const auto& row : rows) {
+        const auto mid = row.at("id").get<std::int64_t>();
+        const auto sid = row.at("sender_id").get<std::int64_t>();
+        upsert_receipt(db, mid, user_id, "seen");
+        notify_senders.insert(sid);
+    }
+
+    const json read_evt{{"type", "read"},
+                        {"chat_id", chat_id},
+                        {"user_id", user_id},
+                        {"last_message_id", last_message_id}};
+    broadcast_to_members(hub, db, chat_id, read_evt, user_id);
+
+    for (const auto sid : notify_senders) {
+        const json receipt_evt{{"type", "receipt"},
+                               {"chat_id", chat_id},
+                               {"user_id", user_id},
+                               {"status", "seen"},
+                               {"up_to_message_id", last_message_id}};
+        hub.to("user:" + std::to_string(sid)).broadcast_text(receipt_evt.dump());
+    }
 }
 
 std::string exe_dir() {
@@ -355,6 +556,9 @@ int main() {
     Chat::migrate_schema(db);
     ChatMember::migrate_schema(db);
     Message::migrate_schema(db);
+    MessageReceipt::migrate_schema(db);
+    ensure_column(db, "chat_members", "last_read_message_id", "INTEGER");
+    ensure_column(db, "chat_members", "last_read_at", "TEXT");
 
     pulse::Hub hub;
     Presence presence;
@@ -493,6 +697,7 @@ int main() {
             return;
         }
         std::int64_t chat_id;
+        bool created = false;
         if (const auto existing = find_dm_chat(db, me, peer_id)) {
             chat_id = *existing;
         } else {
@@ -501,8 +706,10 @@ int main() {
             chat_id = chat->id();
             ChatMember::create(db, {{"chat_id", chat_id}, {"user_id", me}});
             ChatMember::create(db, {{"chat_id", chat_id}, {"user_id", peer_id}});
+            created = true;
         }
         const auto chat_row = Chat::query(db).where_eq("id", chat_id).limit(1).first();
+        if (created) notify_chat_created(hub, db, presence, chat_id, me);
         res.json(json{{"chat", chat_json(db, presence, *chat_row, me)}});
     }).Use(guard);
 
@@ -535,6 +742,7 @@ int main() {
             added.insert(member_id);
         }
         const auto chat_row = Chat::query(db).where_eq("id", chat_id).limit(1).first();
+        notify_chat_created(hub, db, presence, chat_id, me);
         res.status(Status::Created).json(json{{"chat", chat_json(db, presence, *chat_row, me)}});
     }).Use(guard);
 
@@ -560,7 +768,7 @@ int main() {
             Message::query(db).where_eq("chat_id", chat_id).order_by("id", false).limit(limit).get();
         std::reverse(rows.begin(), rows.end());
         json messages = json::array();
-        for (const auto& row : rows) messages.push_back(message_json(db, presence, row));
+        for (const auto& row : rows) messages.push_back(message_json(db, presence, row, me));
         res.json(json{{"messages", messages}});
     }).Use(guard);
 
@@ -581,8 +789,13 @@ int main() {
             json_error(res, Status::UnprocessableEntity, "body cannot be empty");
             return;
         }
+        std::optional<std::string> client_id;
+        if (j->contains("client_id") && (*j)["client_id"].is_string()) {
+            client_id = (*j)["client_id"].get<std::string>();
+        }
         touch_last_seen(db, me);
-        json out = save_and_broadcast_message(db, hub, presence, chat_id, me, std::move(text));
+        json out = save_and_broadcast_message(db, hub, presence, chat_id, me, std::move(text),
+                                              client_id);
         out.erase("type");
         res.status(Status::Created).json(json{{"message", out}});
     }).Use(guard);
@@ -604,6 +817,23 @@ int main() {
         res.json(json{{"ok", true}});
     }).Use(guard);
 
+    server.Post("/api/chats/:id/read", [&](Request& req, Response& res) {
+        const auto me = *uid(req);
+        const auto chat_id = std::stoll(std::string(req.params().at("id")));
+        if (!is_member(db, chat_id, me)) {
+            json_error(res, Status::Forbidden, "forbidden");
+            return;
+        }
+        const auto j = body::json(req);
+        if (!j || !j->contains("last_message_id")) {
+            json_error(res, Status::UnprocessableEntity, "need last_message_id");
+            return;
+        }
+        const auto last_id = (*j)["last_message_id"].get<std::int64_t>();
+        mark_chat_read(db, hub, chat_id, me, last_id);
+        res.json(json{{"ok", true}});
+    }).Use(guard);
+
     // ---- Pulse realtime ----
     server.Get("/pulse", [&](Request& req, Response& res) {
         const auto me = uid(req);
@@ -620,7 +850,10 @@ int main() {
         touch_last_seen(db, *me);
         broadcast_presence(hub, presence, db, *me, true);
 
-        ch.send_text(json{{"type", "connected"}, {"user_id", *me}}.dump());
+        ch.send_text(json{{"type", "connected"},
+                          {"user_id", *me},
+                          {"online_users", presence.online_user_ids()}}
+                         .dump());
 
         ch.on_text([&](pulse::Channel& c, std::string_view raw) {
             const auto user_id = presence.user_of(c);
@@ -635,14 +868,27 @@ int main() {
             if (!j.contains("type") || !j["type"].is_string()) return;
             const auto type = j["type"].get<std::string>();
 
+            if (type == "hello") {
+                c.send_text(json{{"type", "connected"},
+                                 {"user_id", *user_id},
+                                 {"online_users", presence.online_user_ids()}}
+                                .dump());
+                return;
+            }
+
             if (type == "send") {
                 if (!j.contains("chat_id") || !j.contains("body")) return;
                 const auto chat_id = j["chat_id"].get<std::int64_t>();
                 if (!is_member(db, chat_id, *user_id)) return;
                 std::string text = j["body"].get<std::string>();
                 if (text.empty()) return;
+                std::optional<std::string> client_id;
+                if (j.contains("client_id") && j["client_id"].is_string()) {
+                    client_id = j["client_id"].get<std::string>();
+                }
                 touch_last_seen(db, *user_id);
-                save_and_broadcast_message(db, hub, presence, chat_id, *user_id, std::move(text));
+                save_and_broadcast_message(db, hub, presence, chat_id, *user_id, std::move(text),
+                                           client_id);
                 return;
             }
 
@@ -651,6 +897,14 @@ int main() {
                 const auto chat_id = j["chat_id"].get<std::int64_t>();
                 if (!is_member(db, chat_id, *user_id)) return;
                 broadcast_typing(hub, db, chat_id, *user_id, j["typing"].get<bool>());
+                return;
+            }
+
+            if (type == "read") {
+                if (!j.contains("chat_id") || !j.contains("last_message_id")) return;
+                const auto chat_id = j["chat_id"].get<std::int64_t>();
+                if (!is_member(db, chat_id, *user_id)) return;
+                mark_chat_read(db, hub, chat_id, *user_id, j["last_message_id"].get<std::int64_t>());
             }
         });
 

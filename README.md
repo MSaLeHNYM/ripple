@@ -46,6 +46,9 @@ Socketify’s **Pulse** layer keeps the connection pulsing — Ripple turns that
 - **Group chats** — create a room and invite members
 - **Realtime** — messages, typing indicators, and online presence over Pulse
 - **History** — messages persisted and reloaded per chat
+- **Theme** — dark / light mode with persistence
+- **Unread + receipts** — sidebar badges, delivered/seen ticks
+- **Reconnect** — Pulse auto-reconnect with backoff
 - **SPA** — single binary serves the React build + API + WebSocket
 
 ## Quick start
@@ -116,18 +119,25 @@ Browser ──REST──► Socketify HTTP ──► SQLite (users, chats, messa
 | `POST` | `/api/chats/dm` | `{user_id}` |
 | `POST` | `/api/chats/group` | `{title, member_ids}` |
 | `GET` | `/api/chats/:id/messages` | history |
-| `POST` | `/api/chats/:id/messages` | `{body}` |
+| `POST` | `/api/chats/:id/messages` | `{body, client_id?}` |
 | `POST` | `/api/chats/:id/typing` | `{typing}` |
+| `POST` | `/api/chats/:id/read` | `{last_message_id}` |
 
 ### Pulse events (`GET /pulse`)
 
 | Direction | Example |
 |---|---|
-| Client → | `{ "type": "send", "chat_id": 1, "body": "hi" }` |
+| Client → | `{ "type": "hello" }` |
+| Client → | `{ "type": "send", "chat_id": 1, "body": "hi", "client_id": "…" }` |
 | Client → | `{ "type": "typing", "chat_id": 1, "typing": true }` |
-| Server → | `{ "type": "message", ... }` |
-| Server → | `{ "type": "presence", "users": [...] }` |
-| Server → | `{ "type": "typing", ... }` |
+| Client → | `{ "type": "read", "chat_id": 1, "last_message_id": 42 }` |
+| Server → | `{ "type": "connected", "user_id": 1, "online_users": [1, 2] }` |
+| Server → | `{ "type": "message", "id", "chat_id", "sender_id", "body", "client_id?", "sender": {…} }` |
+| Server → | `{ "type": "presence", "user_id", "online", "last_seen" }` |
+| Server → | `{ "type": "typing", "chat_id", "user_id", "display_name", "typing" }` |
+| Server → | `{ "type": "chat", "chat_id" }` |
+| Server → | `{ "type": "receipt", "message_id"\|"up_to_message_id", "chat_id", "user_id", "status" }` |
+| Server → | `{ "type": "read", "chat_id", "user_id", "last_message_id" }` |
 
 ## Project layout
 

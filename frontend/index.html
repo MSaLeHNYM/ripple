@@ -12,6 +12,19 @@
       rel="stylesheet"
     />
     <title>Ripple</title>
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem('ripple-theme');
+          if (t !== 'light' && t !== 'dark') {
+            t = window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+          }
+          document.documentElement.dataset.theme = t;
+        } catch (e) {
+          document.documentElement.dataset.theme = 'dark';
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>
