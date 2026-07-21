@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Kind, packVideo, packVoice, unpack } from '../pulse_media.js';
+import { requestUserMedia } from '../mediaAccess.js';
 
 /**
  * In-call UI: captures mic (+ optional camera), streams via pulse_media frames,
@@ -41,14 +42,14 @@ export default function CallOverlay({
 
     (async () => {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
+        const stream = await requestUserMedia({
           audio: {
             echoCancellation: true,
             noiseSuppression: true,
             sampleRate: 16000,
           },
           video: video ? { width: 320, height: 240, frameRate: 8 } : false,
-        });
+        }, video ? 'media' : 'microphone');
         if (cancelled) {
           stream.getTracks().forEach((t) => t.stop());
           return;
@@ -105,6 +106,7 @@ export default function CallOverlay({
         }
       } catch (err) {
         console.error('media error', err);
+        alert(err?.message || 'Microphone / camera access failed.');
         onEnd?.();
       }
     })();

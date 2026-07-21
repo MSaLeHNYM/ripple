@@ -1,5 +1,6 @@
 import { useCallback, useRef, useState } from 'react';
 import EmojiPicker from './EmojiPicker.jsx';
+import { requestUserMedia } from '../mediaAccess.js';
 
 const TYPING_DEBOUNCE_MS = 1200;
 
@@ -120,7 +121,7 @@ export default function Composer({ onSend, onTyping, disabled: composerDisabled 
   const startRecording = async () => {
     if (recording || sending) return;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await requestUserMedia({ audio: true }, 'microphone');
       recChunks.current = [];
       const mr = new MediaRecorder(stream);
       mr.ondataavailable = (e) => { if (e.data.size > 0) recChunks.current.push(e.data); };
@@ -146,8 +147,8 @@ export default function Composer({ onSend, onTyping, disabled: composerDisabled 
       setRecording(true);
       setRecSeconds(0);
       recTimer.current = setInterval(() => setRecSeconds((s) => s + 1), 1000);
-    } catch {
-      alert('Microphone access denied.');
+    } catch (err) {
+      alert(err?.message || 'Microphone access denied.');
     }
   };
 

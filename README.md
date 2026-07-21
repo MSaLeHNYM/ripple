@@ -125,9 +125,14 @@ If Socketify was installed to a custom prefix:
 ### TLS certs only
 
 ```bash
-./gen_certs.sh              # → certs/server.crt + certs/server.key
+./gen_certs.sh              # → certs/server.crt + certs/server.key (includes LAN IPs)
+./gen_certs.sh --force      # regenerate after IP change
 ./gen_certs.sh /tmp/mycerts # custom output directory
 ```
+
+**Voice / video mic access:** open `https://…:8443` (never `http://192.168.x.x`).
+Accept the self-signed warning once, then Allow microphone in the browser prompt.
+If you previously clicked Block, clear site permissions and reload.
 
 Override paths via CLI or env: `--cert` / `--key`, or `SOCKETIFY_CERT_FILE` /
 `SOCKETIFY_KEY_FILE`.
