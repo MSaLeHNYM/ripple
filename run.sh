@@ -70,16 +70,22 @@ fi
 if ! cmake "${CMAKE_ARGS[@]}"; then
   cat >&2 <<'EOF'
 
-error: CMake could not find Socketify 0.2.
+error: Socketify 0.2 not found, or the installed package is too old/incomplete.
 
-Install it first, then re-run ./run.sh:
+Ripple needs Socketify with SQLite ORM + Pulse (db.h, pulse.h, pulse_easy,
+pulse_media, json, validate, config). An older /usr/local install that only
+has the HTTP core will fail this check.
 
-  cd ../Socketify   # or your Socketify clone
+Install / upgrade Socketify, then re-run ./run.sh:
+
+  cd ../Socketify   # or: gh repo clone MSaLeHNYM/Socketify
   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
   cmake --build build -j"$(nproc)"
   sudo cmake --install build
 
-Or: ./run.sh --prefix /usr/local
+  cd ../ripple && rm -rf build && ./run.sh
+
+Or point at a custom prefix:  ./run.sh --prefix /usr/local
 EOF
   exit 1
 fi
