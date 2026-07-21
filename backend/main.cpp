@@ -1,7 +1,8 @@
-// Ripple backend — entry point.
+// Ripple backend — entry point (HTTPS / WSS only).
 //
 // Usage:
-//   ./ripple [--host 0.0.0.0] [--port 8080] [--log info] [--db PATH] [--help]
+//   ./ripple --cert certs/server.crt --key certs/server.key [--host 0.0.0.0] [--port 8443]
+//   SOCKETIFY_CERT_FILE=... SOCKETIFY_KEY_FILE=... ./ripple
 
 #include "models.h"
 #include "utils.h"
@@ -19,34 +20,47 @@
 #include <string>
 #include <string_view>
 
+#if !defined(SOCKETIFY_HAS_TLS) || !SOCKETIFY_HAS_TLS
+#error "Ripple requires Socketify built with SOCKETIFY_WITH_TLS=ON"
+#endif
+
 namespace fs = std::filesystem;
 
 namespace {
 
 struct Options {
     std::string host = "0.0.0.0";
-    int         port = 8080;
+    int         port = 8443;
     std::string log_level = "info";  // trace|debug|info|warn|error|fatal|off
     std::string db_path = "data/ripple.db";
     std::string secret;
+    std::string cert_file;
+    std::string key_file;
 };
 
 void print_usage(const char* argv0) {
     std::fprintf(stderr,
-                 "Usage: %s [options]\n"
+                 "Usage: %s --cert <pem> --key <pem> [options]\n"
+                 "\n"
+                 "Ripple listens on HTTPS / WSS only (no plain HTTP).\n"
                  "\n"
                  "Options:\n"
+                 "  --cert <path>     TLS certificate PEM (or $SOCKETIFY_CERT_FILE)\n"
+                 "  --key <path>      TLS private key PEM (or $SOCKETIFY_KEY_FILE)\n"
                  "  --host <addr>     Listen address (default: 0.0.0.0)\n"
-                 "  --port <n>        Listen port (default: 8080, or $PORT)\n"
+                 "  --port <n>        Listen port (default: 8443, or $PORT)\n"
                  "  --log <level>     Log level: trace|debug|info|warn|error|fatal|off\n"
                  "                    (default: info, or $LOG_LEVEL)\n"
                  "  --db <path>       SQLite path (default: data/ripple.db, or $DB_PATH)\n"
                  "  --secret <str>    Session secret (default: $SESSION_SECRET)\n"
                  "  -h, --help        Show this help\n"
                  "\n"
+                 "Generate a self-signed cert:\n"
+                 "  ./gen_certs.sh\n"
+                 "\n"
                  "Examples:\n"
-                 "  %s --log info --port 9999 --host 0.0.0.0\n"
-                 "  %s --port 8080 --log debug\n",
+                 "  %s --cert certs/server.crt --key certs/server.key\n"
+                 "  %s --cert certs/server.crt --key certs/server.key --port 8443 --log debug\n",
                  argv0, argv0, argv0);
 }
 
@@ -115,6 +129,18 @@ bool parse_args(int argc, char** argv, Options& opt) {
             opt.secret = v;
             continue;
         }
+        if (a == "--cert") {
+            const char* v = need("--cert");
+            if (!v) return false;
+            opt.cert_file = v;
+            continue;
+        }
+        if (a == "--key") {
+            const char* v = need("--key");
+            if (!v) return false;
+            opt.key_file = v;
+            continue;
+        }
         std::fprintf(stderr, "error: unknown argument '%s'\n", argv[i]);
         print_usage(argv[0]);
         return false;
@@ -129,14 +155,38 @@ int main(int argc, char** argv) {
     auto cfg = config::Config::from_env().merge_file(".env");
 
     Options opt;
-    opt.port      = static_cast<int>(cfg.get_int("PORT").value_or(8080));
+    opt.port      = static_cast<int>(cfg.get_int("PORT").value_or(8443));
     opt.host      = cfg.get_or("HOST", "0.0.0.0");
     opt.log_level = cfg.get_or("LOG_LEVEL", "info");
     opt.db_path   = cfg.get_or("DB_PATH", "data/ripple.db");
     opt.secret    = cfg.get_or("SESSION_SECRET",
                                "ripple-dev-secret-change-in-prod-32b");
+    opt.cert_file = cfg.get_or("SOCKETIFY_CERT_FILE", "");
+    opt.key_file  = cfg.get_or("SOCKETIFY_KEY_FILE", "");
 
     if (!parse_args(argc, argv, opt)) return 2;
+
+    if (opt.cert_file.empty() || opt.key_file.empty()) {
+        if (auto env = TlsOptions::from_env()) {
+            if (opt.cert_file.empty()) opt.cert_file = env->cert_file;
+            if (opt.key_file.empty())  opt.key_file  = env->key_file;
+        }
+    }
+    if (opt.cert_file.empty()) opt.cert_file = "certs/server.crt";
+    if (opt.key_file.empty())  opt.key_file  = "certs/server.key";
+
+    if (!fs::exists(opt.cert_file) || !fs::exists(opt.key_file)) {
+        std::fprintf(stderr,
+                     "error: TLS certificate/key not found:\n"
+                     "  cert: %s\n"
+                     "  key:  %s\n"
+                     "\n"
+                     "Ripple does not serve plain HTTP. Generate a self-signed pair:\n"
+                     "  ./gen_certs.sh\n"
+                     "or pass --cert / --key (or SOCKETIFY_CERT_FILE / SOCKETIFY_KEY_FILE).\n",
+                     opt.cert_file.c_str(), opt.key_file.c_str());
+        return 2;
+    }
 
     const auto level = parse_log_level(opt.log_level);
     if (!level) {
@@ -162,7 +212,10 @@ int main(int argc, char** argv) {
     CallRooms        call_rooms;
     pulse_easy::App  easy(&hub);
     pulse_media::Hub media(&hub);
-    Server           server;
+
+    ServerOptions sopts;
+    sopts.tls = TlsOptions{.cert_file = opt.cert_file, .key_file = opt.key_file};
+    Server server(sopts);
 
     // Access log: 2xx/3xx → Info, 4xx → Warn, 5xx → Error (filtered by set_level).
     if (*level != logging::Level::Off) {
@@ -177,8 +230,9 @@ int main(int argc, char** argv) {
     server.Use(cors::middleware(cors_opts));
 
     sessions::Options so;
-    so.secret  = opt.secret;
-    so.rolling = true;
+    so.secret        = opt.secret;
+    so.rolling       = true;
+    so.cookie_secure = true;  // HTTPS-only cookies
     server.Use(sessions::middleware(so));
 
     register_routes(server, db, hub, presence);
@@ -203,7 +257,8 @@ int main(int argc, char** argv) {
         logging::fatal("failed to start: {}", server.last_error());
         return 1;
     }
-    logging::info("Ripple on http://{}:{}  (web={})", opt.host, opt.port, web);
+    logging::info("Ripple on https://{}:{}  (web={}  cert={})",
+                  opt.host, opt.port, web, opt.cert_file);
     server.Wait();
     return 0;
 }

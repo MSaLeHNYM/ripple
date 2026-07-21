@@ -28,6 +28,12 @@ web/
 .env.*
 !.env.example
 
+# Dev TLS material (./gen_certs.sh)
+certs/
+*.crt
+*.key
+*.pem
+
 # Frontend
 frontend/node_modules/
 frontend/.vite/

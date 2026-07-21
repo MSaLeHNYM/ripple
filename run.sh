@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
-# Ripple — build frontend + server, stage web/, run on :8080
+# Ripple — build frontend + server, stage web/, run HTTPS-only on :8443
 #
-# Requires Socketify already installed (apt or cmake --install).
-# Ripple only links Socketify::socketify via find_package — it does not build it.
+# Requires Socketify already installed WITH TLS:
+#   cmake -S . -B build -DSOCKETIFY_WITH_TLS=ON && cmake --build build && sudo cmake --install build
 #
 # Usage:
 #   ./run.sh
-#   ./run.sh --port 9999 --host 0.0.0.0 --log info
+#   ./run.sh --port 8443 --host 0.0.0.0 --log info
 #   ./run.sh --skip-npm
-#   ./run.sh --build-dir /tmp/ripple-build
-#   ./run.sh --prefix /usr/local          # where Socketify was installed
+#   ./run.sh --prefix /usr/local
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT}/build"
+CERTS_DIR="${ROOT}/certs"
 SKIP_NPM=0
-PORT=8080
+PORT=8443
 HOST="0.0.0.0"
 LOG_LEVEL="info"
 PREFIX=""
@@ -43,6 +43,14 @@ done
 
 echo "==> Ripple root: ${ROOT}"
 
+# ---- TLS certs (required — Ripple does not serve plain HTTP) ----
+if [[ ! -f "${CERTS_DIR}/server.crt" || ! -f "${CERTS_DIR}/server.key" ]]; then
+  echo "==> Generating self-signed TLS certs → ${CERTS_DIR}"
+  "${ROOT}/gen_certs.sh" "${CERTS_DIR}"
+fi
+CERT="${CERTS_DIR}/server.crt"
+KEY="${CERTS_DIR}/server.key"
+
 # ---- Frontend ----
 if [[ "${SKIP_NPM}" -eq 0 ]]; then
   echo "==> Building frontend"
@@ -61,7 +69,7 @@ if grep -q 'Build the frontend' "${ROOT}/frontend/dist/index.html"; then
   exit 1
 fi
 
-# ---- C++ binary (find_package(Socketify) only) ----
+# ---- C++ binary (find_package(Socketify) + TLS check) ----
 echo "==> Building server → ${BUILD_DIR}"
 CMAKE_ARGS=(
   -S "${ROOT}"
@@ -75,16 +83,16 @@ fi
 if ! cmake "${CMAKE_ARGS[@]}"; then
   cat >&2 <<'EOF'
 
-error: Socketify 0.2 not found, or the installed package is too old/incomplete.
+error: Socketify not found, too old, or built without TLS.
 
-Ripple needs Socketify with SQLite ORM + Pulse (db.h, pulse.h, pulse_easy,
-pulse_media, json, validate, config). An older /usr/local install that only
-has the HTTP core will fail this check.
+Ripple needs:
+  - Socketify >= 0.2.2
+  - SOCKETIFY_WITH_TLS=ON  (HTTPS / WSS)
 
-Install / upgrade Socketify, then re-run ./run.sh:
+Install / upgrade Socketify with TLS, then re-run ./run.sh:
 
-  cd ../Socketify   # or: gh repo clone MSaLeHNYM/Socketify
-  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cd ../Socketify
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSOCKETIFY_WITH_TLS=ON
   cmake --build build -j"$(nproc)"
   sudo cmake --install build
 
@@ -114,7 +122,7 @@ if grep -q 'Build the frontend' "${BIN_DIR}/web/index.html"; then
   exit 1
 fi
 
-# Socketify uses SO_REUSEPORT — a stale ./ripple can keep serving old HTML on :8080.
+# Socketify uses SO_REUSEPORT — a stale ./ripple can keep serving on the port.
 free_port() {
   local port="$1"
   local pids=""
@@ -139,7 +147,14 @@ free_port() {
 echo "==> Ensuring port ${PORT} is free"
 free_port "${PORT}"
 
-echo "==> Running ${BIN} --host ${HOST} --port ${PORT} --log ${LOG_LEVEL} (Ctrl-C to stop)"
-echo "    http://${HOST}:${PORT}"
+echo "==> Running ${BIN} (HTTPS / WSS only — Ctrl-C to stop)"
+echo "    https://${HOST}:${PORT}"
+echo "    (self-signed: browser will warn — accept to continue; needed for voice/video on LAN)"
 cd "${BIN_DIR}"
-exec "${BIN}" --host "${HOST}" --port "${PORT}" --log "${LOG_LEVEL}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"
+exec "${BIN}" \
+  --host "${HOST}" \
+  --port "${PORT}" \
+  --log "${LOG_LEVEL}" \
+  --cert "${CERT}" \
+  --key "${KEY}" \
+  "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"

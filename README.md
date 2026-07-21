@@ -15,6 +15,7 @@
   <img alt="C++20" src="https://img.shields.io/badge/C%2B%2B-20-00599C?style=flat-square&logo=cplusplus&logoColor=white">
   <img alt="React" src="https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=black">
   <img alt="Pulse" src="https://img.shields.io/badge/realtime-Pulse%20%2F%20WebSocket-0D7377?style=flat-square">
+  <img alt="HTTPS" src="https://img.shields.io/badge/TLS-HTTPS%20%2F%20WSS-721412?style=flat-square&logo=openssl&logoColor=white">
   <img alt="SQLite" src="https://img.shields.io/badge/DB-SQLite%20ORM-003B57?style=flat-square&logo=sqlite&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-22C55E?style=flat-square">
 </p>
@@ -23,7 +24,7 @@
   <code>messenger</code> · <code>chat</code> · <code>realtime</code> · <code>websocket</code> ·
   <code>pulse</code> · <code>socketify</code> · <code>sqlite</code> · <code>react</code> ·
   <code>cpp20</code> · <code>telegram-like</code> · <code>dm</code> · <code>groups</code> ·
-  <code>presence</code> · <code>typing-indicators</code>
+  <code>presence</code> · <code>typing-indicators</code> · <code>https</code>
 </p>
 
 ---
@@ -34,10 +35,41 @@ Socketify’s **Pulse** layer keeps the connection pulsing — Ripple turns that
 
 | Layer | Tech |
 |---|---|
-| Transport | Socketify **Pulse** (RFC 6455 WebSocket) |
+| Transport | Socketify **Pulse** over **WSS** (RFC 6455) |
+| HTTP | **HTTPS only** (no plain HTTP listener) |
 | Persistence | Socketify **`db` ORM** → SQLite |
-| Auth | Cookie sessions (`sessions::middleware`) |
+| Auth | Cookie sessions (`sessions::middleware`, `Secure`) |
 | UI | React 18 + Vite |
+
+## Important: Socketify must be built with TLS
+
+Ripple is **HTTPS / WSS only**. CMake will refuse to configure if Socketify is too old or was built without TLS.
+
+| Requirement | Detail |
+|---|---|
+| Version | **Socketify ≥ 0.2.2** (`find_package(Socketify 0.2.2)`) |
+| TLS | **`SOCKETIFY_WITH_TLS=ON`** (default) → `SOCKETIFY_HAS_TLS=1` on the imported target |
+
+Why TLS is mandatory:
+
+- Voice / video calls use `getUserMedia`. Browsers only allow that in a
+  [secure context](https://developer.mozilla.org/en-US/docs/Web/Security/Secure_Contexts)
+  (`https://` or `localhost`). Plain `http://192.168.x.x` blocks the mic/camera.
+- Ripple therefore never binds a cleartext HTTP port; Pulse upgrades as `wss://`.
+
+Install Socketify with TLS enabled:
+
+```bash
+git clone https://github.com/MSaLeHNYM/Socketify.git
+cd Socketify
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSOCKETIFY_WITH_TLS=ON
+cmake --build build -j"$(nproc)"
+sudo cmake --install build   # → /usr/local by default
+```
+
+Use **0.2.2+** (composable Pulse close handlers — required so `pulse_media` and
+presence cleanup coexist under reconnect). If configure fails with a version or
+TLS error, reinstall Socketify as above, then `rm -rf build && ./run.sh`.
 
 ## Features
 
@@ -45,44 +77,43 @@ Socketify’s **Pulse** layer keeps the connection pulsing — Ripple turns that
 - **Direct messages** — start a DM from user search
 - **Group chats** — create a room and invite members
 - **Realtime** — messages, typing indicators, and online presence over Pulse
+- **Voice / video calls** — `pulse_media` frames (needs HTTPS for mic/camera)
 - **History** — messages persisted and reloaded per chat
 - **Theme** — dark / light mode with persistence
 - **Unread + receipts** — sidebar badges, delivered/seen ticks
 - **Reconnect** — Pulse auto-reconnect with backoff
-- **SPA** — single binary serves the React build + API + WebSocket
+- **SPA** — single binary serves the React build + API + WebSocket over TLS
 
 ## Quick start
 
-### 1. Install Socketify
+### 1. Install Socketify (with TLS)
 
-Ripple links an **installed** Socketify package (`find_package(Socketify 0.2)`). It does not build Socketify itself.
+See [Important: Socketify must be built with TLS](#important-socketify-must-be-built-with-tls) above.
 
-```bash
-git clone https://github.com/MSaLeHNYM/Socketify.git
-cd Socketify
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j"$(nproc)"
-sudo cmake --install build   # → /usr/local by default
-```
-
-(Or install via apt if a Socketify package is available.)
-
-### 2. Build & run Ripple
+### 2. Build & run Ripple (HTTPS)
 
 ```bash
 git clone https://github.com/MSaLeHNYM/ripple.git
 cd ripple
+chmod +x run.sh gen_certs.sh
 ./run.sh
-# → http://localhost:8080
+# → https://0.0.0.0:8443
 ```
 
-`run.sh` builds the React UI, compiles the C++ server against `Socketify::socketify`, stages `web/`, and starts listening.
+`run.sh` will:
+
+1. Generate `certs/server.crt` + `certs/server.key` if missing (`./gen_certs.sh`)
+2. Build the React UI
+3. Compile the C++ server (checks Socketify **version** + **TLS**)
+4. Stage `web/` and start **HTTPS / WSS** on port **8443**
+
+Accept the browser warning for the self-signed certificate (required for LAN voice/video testing).
 
 ```bash
-./run.sh --port 9999 --host 0.0.0.0 --log info
-# or run the binary directly after build:
-./build/ripple --log info --port 9999 --host 0.0.0.0
-./build/ripple --help
+./run.sh --port 8443 --host 0.0.0.0 --log info
+# or after build:
+./gen_certs.sh
+./build/ripple --cert certs/server.crt --key certs/server.key --help
 ```
 
 If Socketify was installed to a custom prefix:
@@ -91,30 +122,42 @@ If Socketify was installed to a custom prefix:
 ./run.sh --prefix /path/to/prefix
 ```
 
-## Dev mode (Vite + hot reload)
-
-Terminal 1 — backend:
+### TLS certs only
 
 ```bash
-./build/ripple
+./gen_certs.sh              # → certs/server.crt + certs/server.key
+./gen_certs.sh /tmp/mycerts # custom output directory
+```
+
+Override paths via CLI or env: `--cert` / `--key`, or `SOCKETIFY_CERT_FILE` /
+`SOCKETIFY_KEY_FILE`.
+
+## Dev mode (Vite + hot reload)
+
+Terminal 1 — backend (HTTPS):
+
+```bash
+./gen_certs.sh
+./build/ripple --cert certs/server.crt --key certs/server.key
 ```
 
 Terminal 2 — frontend:
 
 ```bash
 cd frontend && npm run dev
-# http://localhost:5173  (proxies /api and /pulse → :8080)
+# configure Vite to proxy to https://localhost:8443 (see frontend/vite.config.*)
 ```
 
 ## Architecture
 
 ```
-Browser ──REST──► Socketify HTTP ──► SQLite (users, chats, messages)
+Browser ──HTTPS──► Socketify TLS ──► SQLite (users, chats, messages)
    │
-   └──Pulse/WS──► /pulse hub ──► rooms user:{id} ──► fan-out JSON events
+   └──WSS/Pulse──► /pulse hub ──► rooms user:{id} ──► fan-out JSON events
+                     └── pulse_media binary frames (voice / video)
 ```
 
-### REST (cookie session)
+### REST (cookie session, Secure)
 
 | Method | Path | Notes |
 |---|---|---|
@@ -131,30 +174,28 @@ Browser ──REST──► Socketify HTTP ──► SQLite (users, chats, messa
 | `POST` | `/api/chats/:id/typing` | `{typing}` |
 | `POST` | `/api/chats/:id/read` | `{last_message_id}` |
 
-### Pulse events (`GET /pulse`)
+### Pulse events (`GET /pulse` over WSS)
 
-| Direction | Example |
+Envelopes use `{ "type", "data" }` (pulse_easy). Example client → server:
+
+| Type | `data` |
 |---|---|
-| Client → | `{ "type": "hello" }` |
-| Client → | `{ "type": "send", "chat_id": 1, "body": "hi", "client_id": "…" }` |
-| Client → | `{ "type": "typing", "chat_id": 1, "typing": true }` |
-| Client → | `{ "type": "read", "chat_id": 1, "last_message_id": 42 }` |
-| Server → | `{ "type": "connected", "user_id": 1, "online_users": [1, 2] }` |
-| Server → | `{ "type": "message", "id", "chat_id", "sender_id", "body", "client_id?", "sender": {…} }` |
-| Server → | `{ "type": "presence", "user_id", "online", "last_seen" }` |
-| Server → | `{ "type": "typing", "chat_id", "user_id", "display_name", "typing" }` |
-| Server → | `{ "type": "chat", "chat_id" }` |
-| Server → | `{ "type": "receipt", "message_id"\|"up_to_message_id", "chat_id", "user_id", "status" }` |
-| Server → | `{ "type": "read", "chat_id", "user_id", "last_message_id" }` |
+| `hello` | `{}` |
+| `send` | `{ chat_id, body, client_id?, kind?, media_url? }` |
+| `typing` | `{ chat_id, typing }` |
+| `read` | `{ chat_id, last_message_id }` |
+| `call_invite` / `call_accept` / … | call signaling |
 
 ## Project layout
 
 ```
 ripple/
-├── assets/logo.svg          # brand mark (transparent)
-├── backend/main.cpp         # API + Pulse + SQLite
+├── assets/logo.svg
+├── backend/main.cpp         # HTTPS API + Pulse + SQLite
 ├── frontend/                # React SPA
-├── CMakeLists.txt
+├── gen_certs.sh             # self-signed TLS for local/LAN
+├── run.sh                   # build + HTTPS run
+├── CMakeLists.txt           # requires Socketify ≥ 0.2.2 + TLS
 ├── LICENSE                  # MIT
 └── README.md
 ```
