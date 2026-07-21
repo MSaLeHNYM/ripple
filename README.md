@@ -53,34 +53,35 @@ Socketify’s **Pulse** layer keeps the connection pulsing — Ripple turns that
 
 ## Quick start
 
-### One command
+### 1. Install Socketify
+
+Ripple links an **installed** Socketify package (`find_package(Socketify 0.2)`). It does not build Socketify itself.
 
 ```bash
+git clone https://github.com/MSaLeHNYM/Socketify.git
+cd Socketify
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+sudo cmake --install build   # → /usr/local by default
+```
+
+(Or install via apt if a Socketify package is available.)
+
+### 2. Build & run Ripple
+
+```bash
+git clone https://github.com/MSaLeHNYM/ripple.git
+cd ripple
 ./run.sh
 # → http://localhost:8080
 ```
 
-`run.sh` installs/builds the React app, compiles the C++ server, stages `web/`, and starts listening.
+`run.sh` builds the React UI, compiles the C++ server against `Socketify::socketify`, stages `web/`, and starts listening.
 
-### As a Socketify example (recommended)
-
-```bash
-git clone --recurse-submodules https://github.com/MSaLeHNYM/Socketify.git
-cd Socketify
-./scripts/run_examples.sh ripple   # delegates to examples/ripple/run.sh
-```
-
-If you already cloned Socketify without submodules:
+If Socketify was installed to a custom prefix:
 
 ```bash
-git submodule update --init --recursive
-```
-
-### Standalone (next to Socketify)
-
-```bash
-# expect ../Socketify on disk, or an installed Socketify package
-./run.sh
+./run.sh --prefix /path/to/prefix
 ```
 
 ## Dev mode (Vite + hot reload)

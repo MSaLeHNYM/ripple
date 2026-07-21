@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # Ripple — build frontend + server, stage web/, run on :8080
 #
-# Requires Socketify installed (apt or `cmake --install`), or a sibling
-# ../Socketify source tree. Builds Ripple as its own CMake project.
+# Requires Socketify already installed (apt or cmake --install).
+# Ripple only links Socketify::socketify via find_package — it does not build it.
 #
 # Usage:
 #   ./run.sh
 #   ./run.sh --port 8080
 #   ./run.sh --skip-npm
 #   ./run.sh --build-dir /tmp/ripple-build
-#   ./run.sh --prefix /usr/local          # hint for find_package
+#   ./run.sh --prefix /usr/local          # where Socketify was installed
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,8 +24,7 @@ while [[ $# -gt 0 ]]; do
     --skip-npm)  SKIP_NPM=1; shift ;;
     --port)      PORT="${2:?}"; shift 2 ;;
     --prefix)    PREFIX="${2:?}"; shift 2 ;;
-    # Kept for Socketify run_examples.sh compatibility — ignored for build path.
-    --socketify-root) shift 2 ;;
+    --socketify-root) shift 2 ;;  # ignored (compat)
     -h|--help)
       sed -n '2,14p' "$0"
       exit 0
@@ -57,7 +56,7 @@ if grep -q 'Build the frontend' "${ROOT}/frontend/dist/index.html"; then
   exit 1
 fi
 
-# ---- C++ binary (standalone; links Socketify::socketify via find_package) ----
+# ---- C++ binary (find_package(Socketify) only) ----
 echo "==> Building server → ${BUILD_DIR}"
 CMAKE_ARGS=(
   -S "${ROOT}"
@@ -68,14 +67,29 @@ if [[ -n "${PREFIX}" ]]; then
   CMAKE_ARGS+=("-DCMAKE_PREFIX_PATH=${PREFIX}")
 fi
 
-cmake "${CMAKE_ARGS[@]}"
+if ! cmake "${CMAKE_ARGS[@]}"; then
+  cat >&2 <<'EOF'
+
+error: CMake could not find Socketify 0.2.
+
+Install it first, then re-run ./run.sh:
+
+  cd ../Socketify   # or your Socketify clone
+  cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+  cmake --build build -j"$(nproc)"
+  sudo cmake --install build
+
+Or: ./run.sh --prefix /usr/local
+EOF
+  exit 1
+fi
+
 cmake --build "${BUILD_DIR}" -j"$(nproc)" --target ripple
 
 BIN_DIR="${BUILD_DIR}"
 BIN="${BIN_DIR}/ripple"
 if [[ ! -x "${BIN}" ]]; then
   echo "error: ripple binary not found at ${BIN}" >&2
-  echo "hint: install Socketify (apt or cmake --install), then re-run" >&2
   exit 1
 fi
 
