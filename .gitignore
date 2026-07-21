@@ -1,9 +1,47 @@
+# Build outputs
 build/
+build-*/
 cmake-build-*/
+compile_commands.json
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.o
+*.a
+*.so
+*.dylib
+
+# Runtime data (SQLite, staged SPA next to binary)
+data/
+web/
 *.db
 *.db-journal
-web/
-data/
-.DS_Store
+*.db-wal
+*.db-shm
+
+# Uploads written under the staged web root
+**/uploads/
+
+# Secrets / local config
+.env
+.env.*
+!.env.example
+
+# Frontend
 frontend/node_modules/
+frontend/.vite/
+npm-debug.log*
+yarn-error.log*
+
 # Keep frontend/dist committed so the example runs without npm.
+# (Rebuild with: cd frontend && npm run build)
+
+# Editors / OS
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+*~

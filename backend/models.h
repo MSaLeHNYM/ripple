@@ -5,9 +5,9 @@
 using namespace socketify;
 using namespace socketify::db;
 
-// Avoid clash with socketify::json namespace — use Json for nlohmann values.
+// Json = nlohmann value type; sj = socketify::json_util helpers.
 using Json = nlohmann::json;
-namespace sj = socketify::json;
+namespace sj = socketify::json_util;
 namespace sv = socketify::validate;
 
 // ---------------------------------------------------------------------------
