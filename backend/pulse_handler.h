@@ -7,6 +7,9 @@
  *
  * Text protocol:  {"type":"<event>","data":{...}}
  * Binary protocol: pulse_media PM frames relayed in call:<chat_id> rooms.
+ *
+ * Rooms: each connection joins user:{id}. Messages are persisted then fan-out
+ * to members' user rooms (see save_and_broadcast_message).
  */
 inline void register_pulse(Server& server, Database& db, pulse::Hub& hub,
                             Presence& presence, CallRooms& call_rooms,
@@ -23,26 +26,30 @@ inline void register_pulse(Server& server, Database& db, pulse::Hub& hub,
         touch_last_seen(db, *me);
         broadcast_presence(hub, presence, db, *me, true);
 
-        // pulse_easy connection (JSON event dispatch)
+        // adopt retains ConnectionState until close / release — safe to discard
+        // the Connection after wiring handlers.
         auto conn = easy.adopt(ch);
 
-        auto wire_close = [&](pulse::Channel& channel) {
-            channel.on_close([&](pulse::Channel& c, pulse::CloseCode, std::string_view) {
-                const auto user_id = presence.user_of(c);
-                call_rooms.clear(c);
-                hub.leave_all(c);
-                presence.untrack(c);
+        auto wire_close = [&](pulse_easy::Connection& c) {
+            // Connection::on_close keeps App::release so handlers stay valid
+            // until disconnect (unlike Channel::on_close which would drop it).
+            c.on_close([&](pulse_easy::Connection& cc, pulse::CloseCode, std::string_view) {
+                auto& channel = cc.channel();
+                const auto user_id = presence.user_of(channel);
+                call_rooms.clear(channel);
+                hub.leave_all(channel);
+                presence.untrack(channel);
                 if (user_id) broadcast_presence(hub, presence, db, *user_id, false);
             });
         };
-        wire_close(conn.channel());
+        wire_close(conn);
 
         auto join_call_room = [&](pulse_easy::Connection& c, std::int64_t chat_id) {
             const std::string room = "call:" + std::to_string(chat_id);
             media.join(room, c.channel());
             call_rooms.set(c.channel(), room);
-            // media.join/attach replaces on_close — restore presence cleanup
-            wire_close(c.channel());
+            // media.join/attach replaces on_close — restore cleanup + release
+            wire_close(c);
 
             media.on_voice(room, [&media, room](pulse::Channel&, const pulse_media::Frame& f) {
                 media.send_voice(room, f.payload, f.stream_id, f.flags);
