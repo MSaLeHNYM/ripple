@@ -6,7 +6,7 @@
 #
 # Usage:
 #   ./run.sh
-#   ./run.sh --port 8080
+#   ./run.sh --port 9999 --host 0.0.0.0 --log info
 #   ./run.sh --skip-npm
 #   ./run.sh --build-dir /tmp/ripple-build
 #   ./run.sh --prefix /usr/local          # where Socketify was installed
@@ -16,13 +16,18 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 BUILD_DIR="${ROOT}/build"
 SKIP_NPM=0
 PORT=8080
+HOST="0.0.0.0"
+LOG_LEVEL="info"
 PREFIX=""
+EXTRA_ARGS=()
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --build-dir) BUILD_DIR="${2:?}"; shift 2 ;;
     --skip-npm)  SKIP_NPM=1; shift ;;
     --port)      PORT="${2:?}"; shift 2 ;;
+    --host)      HOST="${2:?}"; shift 2 ;;
+    --log)       LOG_LEVEL="${2:?}"; shift 2 ;;
     --prefix)    PREFIX="${2:?}"; shift 2 ;;
     --socketify-root) shift 2 ;;  # ignored (compat)
     -h|--help)
@@ -30,8 +35,8 @@ while [[ $# -gt 0 ]]; do
       exit 0
       ;;
     *)
-      echo "unknown arg: $1" >&2
-      exit 1
+      EXTRA_ARGS+=("$1")
+      shift
       ;;
   esac
 done
@@ -134,7 +139,7 @@ free_port() {
 echo "==> Ensuring port ${PORT} is free"
 free_port "${PORT}"
 
-echo "==> Running ${BIN} (Ctrl-C to stop)"
-echo "    http://localhost:${PORT}"
+echo "==> Running ${BIN} --host ${HOST} --port ${PORT} --log ${LOG_LEVEL} (Ctrl-C to stop)"
+echo "    http://${HOST}:${PORT}"
 cd "${BIN_DIR}"
-exec "${BIN}"
+exec "${BIN}" --host "${HOST}" --port "${PORT}" --log "${LOG_LEVEL}" "${EXTRA_ARGS[@]+"${EXTRA_ARGS[@]}"}"

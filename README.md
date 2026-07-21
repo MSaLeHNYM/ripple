@@ -78,6 +78,13 @@ cd ripple
 
 `run.sh` builds the React UI, compiles the C++ server against `Socketify::socketify`, stages `web/`, and starts listening.
 
+```bash
+./run.sh --port 9999 --host 0.0.0.0 --log info
+# or run the binary directly after build:
+./build/ripple --log info --port 9999 --host 0.0.0.0
+./build/ripple --help
+```
+
 If Socketify was installed to a custom prefix:
 
 ```bash
