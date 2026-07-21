@@ -1,5 +1,6 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Composer from './Composer.jsx';
+import Lightbox from './Lightbox.jsx';
 import {
   chatPeer,
   chatTitle,
@@ -13,6 +14,17 @@ function formatMessageTime(iso) {
   return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function formatDate(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(today.getDate() - 1);
+  if (d.toDateString() === today.toDateString()) return 'Today';
+  if (d.toDateString() === yesterday.toDateString()) return 'Yesterday';
+  return d.toLocaleDateString([], { month: 'short', day: 'numeric', year: 'numeric' });
+}
+
 function isOtherOnline(chat, currentUserId, onlineUsers) {
   if (!chat || isGroupChat(chat)) return false;
   const other = chatPeer(chat, currentUserId);
@@ -22,16 +34,57 @@ function isOtherOnline(chat, currentUserId, onlineUsers) {
 
 function receiptLabel(status) {
   switch (status) {
-    case 'seen':
-      return '✓✓';
-    case 'delivered':
-      return '✓✓';
-    case 'sent':
-      return '✓';
-    case 'pending':
-    default:
-      return '…';
+    case 'seen':      return '✓✓';
+    case 'delivered': return '✓✓';
+    case 'sent':      return '✓';
+    case 'pending':   default: return '…';
   }
+}
+
+function MessageBubble({ msg, isOwn, showSender, isGroup, receipts }) {
+  const [lightbox, setLightbox] = useState(null);
+  const sender = messageSenderLabel(msg);
+  const status = receipts[msg.id] || (msg.pending ? 'pending' : msg.receipt_status);
+  const kind = msg.kind || 'text';
+
+  return (
+    <li className={`message${isOwn ? ' own' : ''}`}>
+      {showSender && <span className="message-sender">{sender}</span>}
+      <div className="message-bubble">
+        {kind === 'image' && msg.media_url ? (
+          <>
+            <img
+              src={msg.media_url}
+              alt="Image"
+              className="msg-image"
+              onClick={() => setLightbox(msg.media_url)}
+              loading="lazy"
+            />
+            {msg.body && msg.body !== msg.media_url && <p>{msg.body}</p>}
+          </>
+        ) : kind === 'voice' && msg.media_url ? (
+          <div className="msg-voice">
+            <span>🎤</span>
+            <audio controls src={msg.media_url} />
+          </div>
+        ) : (
+          <p>{msg.body}</p>
+        )}
+        <div className="message-meta">
+          <time>{formatMessageTime(msg.created_at)}</time>
+          {isOwn && (
+            <span
+              className={`message-receipt${status === 'seen' ? ' seen' : status === 'delivered' ? ' delivered' : status === 'pending' ? ' pending' : ''}`}
+              title={status}
+            >
+              {receiptLabel(status)}
+            </span>
+          )}
+        </div>
+      </div>
+      {lightbox && <Lightbox src={lightbox} onClose={() => setLightbox(null)} />}
+    </li>
+  );
 }
 
 export default function MessagePane({
@@ -45,6 +98,8 @@ export default function MessagePane({
   onDismissError,
   onSend,
   onTyping,
+  onVoiceCall,
+  onVideoCall,
 }) {
   const bottomRef = useRef(null);
 
@@ -68,10 +123,16 @@ export default function MessagePane({
   const isGroup = isGroupChat(chat);
   const memberCount = (chat.members ?? []).length;
 
+  // group by date for dividers
+  let lastDate = '';
+
   return (
     <main className="message-pane">
       <header className="pane-header">
-        <div>
+        <div className="avatar" aria-hidden="true">
+          {chatTitle(chat, currentUser.id).charAt(0).toUpperCase()}
+        </div>
+        <div className="pane-header-info">
           <h2>{chatTitle(chat, currentUser.id)}</h2>
           <p className="pane-status">
             {typingUser ? (
@@ -87,51 +148,48 @@ export default function MessagePane({
             )}
           </p>
         </div>
+        <div className="pane-header-actions">
+          <button type="button" className="btn-icon" title="Voice call" onClick={onVoiceCall}>
+            📞
+          </button>
+          <button type="button" className="btn-icon" title="Video call" onClick={onVideoCall}>
+            🎥
+          </button>
+        </div>
       </header>
 
       {error && (
         <div className="pane-error">
           <span>{error}</span>
-          <button type="button" onClick={onDismissError} aria-label="Dismiss">
-            ×
-          </button>
+          <button type="button" onClick={onDismissError} aria-label="Dismiss">×</button>
         </div>
       )}
 
       <ul className="message-list">
         {messages.map((msg, i) => {
           const isOwn = isOwnMessage(msg, currentUser.id);
-          const sender = messageSenderLabel(msg);
           const showSender = isGroup && !isOwn;
-          const status = receipts[msg.id] || (msg.pending ? 'pending' : msg.receipt_status);
+          const dateStr = formatDate(msg.created_at);
+          const showDivider = dateStr && dateStr !== lastDate;
+          if (showDivider) lastDate = dateStr;
+
           return (
-            <li
-              key={msg.id ?? i}
-              className={`message${isOwn ? ' own' : ''} message-appear`}
-            >
-              {showSender && <span className="message-sender">{sender}</span>}
-              <div className="message-bubble">
-                <p>{msg.body}</p>
-                <div className="message-meta">
-                  <time>{formatMessageTime(msg.created_at)}</time>
-                  {isOwn && status && (
-                    <span
-                      className={`message-receipt${status === 'pending' ? ' pending' : ''}${status === 'seen' ? ' seen' : ''}`}
-                      title={status}
-                      aria-label={status}
-                    >
-                      {receiptLabel(status)}
-                    </span>
-                  )}
-                </div>
-              </div>
-            </li>
+            <div key={msg.id ?? `msg-${i}`}>
+              {showDivider && <div className="date-divider">{dateStr}</div>}
+              <MessageBubble
+                msg={msg}
+                isOwn={isOwn}
+                showSender={showSender}
+                isGroup={isGroup}
+                receipts={receipts}
+              />
+            </div>
           );
         })}
         {typingUser && (
-          <li className="message typing-bubble message-appear">
-            <div className="message-bubble typing-dots">
-              <span /><span /><span />
+          <li className="message typing-bubble">
+            <div className="message-bubble">
+              <div className="typing-dots"><span /><span /><span /></div>
             </div>
           </li>
         )}

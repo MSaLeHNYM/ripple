@@ -21,7 +21,12 @@ async function request(path, options = {}) {
   }
 
   if (!res.ok) {
-    const message = data?.error || data?.message || res.statusText || 'Request failed';
+    let message = data?.error || data?.message || res.statusText || 'Request failed';
+    // socketify::validate errors_json shape
+    if (data?.errors && typeof data.errors === 'object') {
+      const first = Object.values(data.errors).flat()[0];
+      if (first) message = first;
+    }
     throw new Error(message);
   }
 
@@ -55,10 +60,10 @@ export const api = {
 
   getMessages: (chatId) => request(`/api/chats/${chatId}/messages`),
 
-  sendMessage: (chatId, body, client_id) =>
+  sendMessage: (chatId, body, client_id, kind = 'text', media_url = '') =>
     request(`/api/chats/${chatId}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ body, client_id }),
+      body: JSON.stringify({ body, client_id, kind, media_url: media_url || undefined }),
     }),
 
   setTyping: (chatId, typing) =>
@@ -75,10 +80,11 @@ export const api = {
 };
 
 /**
- * Persistent Pulse WebSocket with exponential backoff reconnect.
- * Returns { send, close, getSocket }.
+ * Pulse WebSocket with pulse_easy envelopes + pulse_media binary frames.
+ * send(type, data) → {"type","data"}
+ * sendBinary(ArrayBuffer)
  */
-export function createPulseConnection({ onMessage, onStatus }) {
+export function createPulseConnection({ onMessage, onBinary, onStatus }) {
   let ws = null;
   let closed = false;
   let attempt = 0;
@@ -97,24 +103,36 @@ export function createPulseConnection({ onMessage, onStatus }) {
 
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
     const socket = new WebSocket(`${protocol}//${window.location.host}/pulse`);
+    socket.binaryType = 'arraybuffer';
     ws = socket;
 
     socket.addEventListener('open', () => {
       attempt = 0;
       onStatus?.(true);
       try {
-        socket.send(JSON.stringify({ type: 'hello' }));
+        socket.send(JSON.stringify({ type: 'hello', data: {} }));
       } catch {
         /* ignore */
       }
     });
 
     socket.addEventListener('message', (event) => {
+      if (event.data instanceof ArrayBuffer) {
+        onBinary?.(event.data);
+        return;
+      }
       try {
-        const data = JSON.parse(event.data);
-        onMessage?.(data);
+        const msg = JSON.parse(event.data);
+        if (msg?.type && Object.prototype.hasOwnProperty.call(msg, 'data')) {
+          const data = msg.data && typeof msg.data === 'object' && !Array.isArray(msg.data)
+            ? msg.data
+            : { value: msg.data };
+          onMessage?.({ type: msg.type, ...data });
+        } else {
+          onMessage?.(msg);
+        }
       } catch {
-        /* ignore malformed frames */
+        /* ignore */
       }
     });
 
@@ -132,23 +150,33 @@ export function createPulseConnection({ onMessage, onStatus }) {
     });
 
     socket.addEventListener('error', () => {
-      try {
-        socket.close();
-      } catch {
-        /* ignore */
-      }
+      try { socket.close(); } catch { /* ignore */ }
     });
   };
 
   connect();
 
   return {
-    send(payload) {
-      if (ws?.readyState === WebSocket.OPEN) {
-        ws.send(typeof payload === 'string' ? payload : JSON.stringify(payload));
-        return true;
+    /** Send pulse_easy envelope: {type, data} */
+    send(typeOrPayload, data) {
+      if (ws?.readyState !== WebSocket.OPEN) return false;
+      let payload;
+      if (typeof typeOrPayload === 'string') {
+        payload = { type: typeOrPayload, data: data ?? {} };
+      } else if (typeOrPayload && typeof typeOrPayload === 'object') {
+        // back-compat: flat {type, chat_id, ...} → envelope
+        const { type, ...rest } = typeOrPayload;
+        payload = { type, data: rest };
+      } else {
+        return false;
       }
-      return false;
+      ws.send(JSON.stringify(payload));
+      return true;
+    },
+    sendBinary(buf) {
+      if (ws?.readyState !== WebSocket.OPEN) return false;
+      ws.send(buf);
+      return true;
     },
     isOpen() {
       return ws?.readyState === WebSocket.OPEN;
@@ -156,23 +184,8 @@ export function createPulseConnection({ onMessage, onStatus }) {
     close() {
       closed = true;
       clearReconnect();
-      try {
-        ws?.close();
-      } catch {
-        /* ignore */
-      }
+      try { ws?.close(); } catch { /* ignore */ }
       ws = null;
     },
   };
-}
-
-/** @deprecated use createPulseConnection */
-export function createPulseSocket(onMessage, onOpen, onClose) {
-  return createPulseConnection({
-    onMessage,
-    onStatus: (connected) => {
-      if (connected) onOpen?.();
-      else onClose?.();
-    },
-  });
 }

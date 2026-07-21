@@ -4,9 +4,14 @@ import { useAuth } from '../auth.jsx';
 import { mergeReceiptStatus, normalizeMessage } from '../normalize.js';
 import Sidebar from './Sidebar.jsx';
 import MessagePane from './MessagePane.jsx';
+import CallOverlay from './CallOverlay.jsx';
 
 function makeClientId() {
   return `c-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+}
+
+function makeCallId() {
+  return `call-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
 export default function ChatApp() {
@@ -20,6 +25,8 @@ export default function ChatApp() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [wsConnected, setWsConnected] = useState(false);
   const [error, setError] = useState('');
+  const [call, setCall] = useState(null); // {status, kind, chat_id, call_id, from_name, ...}
+  const [incomingFrame, setIncomingFrame] = useState(null);
   const pulseRef = useRef(null);
   const activeChatIdRef = useRef(activeChatId);
   const userIdRef = useRef(user.id);
@@ -171,6 +178,9 @@ export default function ChatApp() {
           if (activeChatIdRef.current) loadMessages(activeChatIdRef.current);
         }
       },
+      onBinary: (buf) => {
+        setIncomingFrame(buf);
+      },
       onMessage: (event) => {
         switch (event.type) {
           case 'connected': {
@@ -241,6 +251,43 @@ export default function ChatApp() {
           case 'read':
             loadChats();
             break;
+          case 'call_invite':
+            if (event.from_user_id === userIdRef.current) break;
+            setCall({
+              status: 'ringing',
+              kind: event.kind || 'voice',
+              chat_id: event.chat_id,
+              call_id: event.call_id,
+              from_name: event.from_name,
+              from_user_id: event.from_user_id,
+            });
+            break;
+          case 'call_accept':
+            setCall((prev) =>
+              prev && prev.call_id === event.call_id
+                ? { ...prev, status: 'active' }
+                : prev,
+            );
+            break;
+          case 'call_joined':
+            setCall((prev) =>
+              prev
+                ? { ...prev, status: 'active', room: event.room, call_id: event.call_id || prev.call_id }
+                : {
+                    status: 'active',
+                    kind: event.kind || 'voice',
+                    chat_id: event.chat_id,
+                    call_id: event.call_id,
+                    room: event.room,
+                  },
+            );
+            break;
+          case 'call_reject':
+          case 'call_end':
+            setCall((prev) =>
+              !prev || !event.call_id || prev.call_id === event.call_id ? null : prev,
+            );
+            break;
           default:
             break;
         }
@@ -256,7 +303,7 @@ export default function ChatApp() {
     setError('');
   };
 
-  const handleSend = async (body) => {
+  const handleSend = async (body, kind = 'text', media_url = '') => {
     if (!activeChatId || !body.trim()) return;
     const text = body.trim();
     const clientId = makeClientId();
@@ -272,6 +319,8 @@ export default function ChatApp() {
         display_name: user.display_name,
       },
       body: text,
+      kind,
+      media_url: media_url || undefined,
       created_at: new Date().toISOString(),
       pending: true,
     };
@@ -283,12 +332,14 @@ export default function ChatApp() {
       type: 'send',
       chat_id: activeChatId,
       body: text,
+      kind,
+      media_url,
       client_id: clientId,
     });
 
     if (!sent) {
       try {
-        const data = await api.sendMessage(activeChatId, text, clientId);
+        const data = await api.sendMessage(activeChatId, text, clientId, kind, media_url);
         const msg = normalizeMessage(data.message ?? data);
         setMessages((prev) => {
           const without = prev.filter((m) => m.id !== tempId && m.client_id !== clientId);
@@ -345,6 +396,52 @@ export default function ChatApp() {
     }
   };
 
+  const startCall = (kind) => {
+    if (!activeChatId || call) return;
+    const callId = makeCallId();
+    setCall({
+      status: 'calling',
+      kind,
+      chat_id: activeChatId,
+      call_id: callId,
+      from_name: user.display_name,
+    });
+    pulseRef.current?.send('call_invite', {
+      chat_id: activeChatId,
+      call_id: callId,
+      kind,
+    });
+  };
+
+  const acceptCall = () => {
+    if (!call) return;
+    pulseRef.current?.send('call_accept', {
+      chat_id: call.chat_id,
+      call_id: call.call_id,
+      kind: call.kind,
+    });
+    setCall((prev) => (prev ? { ...prev, status: 'active' } : null));
+  };
+
+  const rejectCall = () => {
+    if (!call) return;
+    pulseRef.current?.send('call_reject', {
+      chat_id: call.chat_id,
+      call_id: call.call_id,
+    });
+    setCall(null);
+  };
+
+  const endCall = () => {
+    if (call) {
+      pulseRef.current?.send('call_end', {
+        chat_id: call.chat_id,
+        call_id: call.call_id,
+      });
+    }
+    setCall(null);
+  };
+
   const handleLogout = async () => {
     pulseRef.current?.close();
     await logout();
@@ -393,7 +490,23 @@ export default function ChatApp() {
         onDismissError={() => setError('')}
         onSend={handleSend}
         onTyping={handleTyping}
+        onVoiceCall={() => startCall('voice')}
+        onVideoCall={() => startCall('video')}
       />
+
+      {call && (
+        <CallOverlay
+          call={{
+            ...call,
+            onAccept: acceptCall,
+            onReject: rejectCall,
+          }}
+          currentUserId={user.id}
+          incomingFrame={incomingFrame}
+          onSendBinary={(buf) => pulseRef.current?.sendBinary(buf)}
+          onEnd={endCall}
+        />
+      )}
     </div>
   );
 }
