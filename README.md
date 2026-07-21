@@ -125,17 +125,24 @@ If Socketify was installed to a custom prefix:
 ### TLS certs only
 
 ```bash
-./gen_certs.sh              # → certs/server.crt + certs/server.key (includes LAN IPs)
-./gen_certs.sh --force      # regenerate after IP change
-./gen_certs.sh /tmp/mycerts # custom output directory
+# Interactive — asks: do you have a domain?
+#   yes → Let's Encrypt (green lock on the public internet)
+#   no  → random self-signed cert for local/LAN (browser warns once)
+./gen_certs.sh
+./gen_certs.sh --force
+
+# Non-interactive
+./gen_certs.sh --domain chat.example.com          # Let's Encrypt
+./gen_certs.sh --self-signed                      # local only
+./gen_certs.sh --letsencrypt --domain chat.example.com
 ```
 
-**Voice / video mic access:** open `https://…:8443` (never `http://192.168.x.x`).
-Accept the self-signed warning once, then Allow microphone in the browser prompt.
-If you previously clicked Block, clear site permissions and reload.
+For Let's Encrypt, DNS must point at this machine and port **80** must be free.
 
-Override paths via CLI or env: `--cert` / `--key`, or `SOCKETIFY_CERT_FILE` /
-`SOCKETIFY_KEY_FILE`.
+**Voice / video:** open `https://…` (never `http://`), allow the microphone.
+
+Override paths: `--cert` / `--key`, or `SOCKETIFY_CERT_FILE` / `SOCKETIFY_KEY_FILE`.
+Optional: `RIPPLE_DOMAIN=chat.example.com ./run.sh` (uses Let's Encrypt when generating).
 
 ## Dev mode (Vite + hot reload)
 
@@ -198,7 +205,7 @@ ripple/
 ├── assets/logo.svg
 ├── backend/main.cpp         # HTTPS API + Pulse + SQLite
 ├── frontend/                # React SPA
-├── gen_certs.sh             # self-signed TLS for local/LAN
+├── gen_certs.sh             # domain TLS (self-signed or Let's Encrypt)
 ├── run.sh                   # build + HTTPS run
 ├── CMakeLists.txt           # requires Socketify ≥ 0.2.2 + TLS
 ├── LICENSE                  # MIT

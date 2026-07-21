@@ -45,8 +45,12 @@ echo "==> Ripple root: ${ROOT}"
 
 # ---- TLS certs (required — Ripple does not serve plain HTTP) ----
 if [[ ! -f "${CERTS_DIR}/server.crt" || ! -f "${CERTS_DIR}/server.key" ]]; then
-  echo "==> Generating self-signed TLS certs → ${CERTS_DIR}"
-  "${ROOT}/gen_certs.sh" "${CERTS_DIR}"
+  echo "==> Generating TLS certs → ${CERTS_DIR}"
+  GEN_ARGS=(--out "${CERTS_DIR}")
+  if [[ -n "${RIPPLE_DOMAIN:-}" ]]; then
+    GEN_ARGS+=(--domain "${RIPPLE_DOMAIN}")
+  fi
+  "${ROOT}/gen_certs.sh" "${GEN_ARGS[@]}"
 fi
 CERT="${CERTS_DIR}/server.crt"
 KEY="${CERTS_DIR}/server.key"
