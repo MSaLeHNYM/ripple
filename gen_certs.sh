@@ -170,7 +170,7 @@ if [[ "${MODE}" == "letsencrypt" ]]; then
     ${FORCE:+--force-renewal}
 
   LIVE="/etc/letsencrypt/live/${DOMAIN}"
-  if [[ ! -f "${LIVE}/fullchain.pem" || ! -f "${LIVE}/privkey.pem" ]]; then
+  if ! sudo test -f "${LIVE}/fullchain.pem" || ! sudo test -f "${LIVE}/privkey.pem"; then
     echo "error: certbot finished but ${LIVE}/fullchain.pem not found" >&2
     exit 1
   fi
