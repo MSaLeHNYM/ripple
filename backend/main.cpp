@@ -163,8 +163,11 @@ int main(int argc, char** argv) {
     pulse_media::Hub media(&hub);
     Server           server;
 
-    if (*level != logging::Level::Off) {
-        server.Use(logging::middleware({.format = "dev", .log_level = *level}));
+    // Request access lines are always Info; set_level() filters them.
+    // Do not pass the CLI level into middleware.log_level — that re-tags
+    // every request as warn/error and makes --log warn still spam access logs.
+    if (*level <= logging::Level::Info) {
+        server.Use(logging::middleware());
     }
 
     cors::CorsOptions cors_opts;
@@ -202,7 +205,6 @@ int main(int argc, char** argv) {
         return 1;
     }
     logging::info("Ripple on http://{}:{}  (web={})", opt.host, opt.port, web);
-    std::printf("Ripple on http://%s:%d  (web=%s)\n", opt.host.c_str(), opt.port, web.c_str());
     server.Wait();
     return 0;
 }
