@@ -26,7 +26,7 @@ namespace {
 struct Options {
     std::string host = "0.0.0.0";
     int         port = 8080;
-    std::string log_level = "info";  // trace|debug|info|warn|error|off
+    std::string log_level = "info";  // trace|debug|info|warn|error|fatal|off
     std::string db_path = "data/ripple.db";
     std::string secret;
 };
@@ -38,7 +38,7 @@ void print_usage(const char* argv0) {
                  "Options:\n"
                  "  --host <addr>     Listen address (default: 0.0.0.0)\n"
                  "  --port <n>        Listen port (default: 8080, or $PORT)\n"
-                 "  --log <level>     Log level: trace|debug|info|warn|error|off\n"
+                 "  --log <level>     Log level: trace|debug|info|warn|error|fatal|off\n"
                  "                    (default: info, or $LOG_LEVEL)\n"
                  "  --db <path>       SQLite path (default: data/ripple.db, or $DB_PATH)\n"
                  "  --secret <str>    Session secret (default: $SESSION_SECRET)\n"
@@ -56,6 +56,7 @@ std::optional<logging::Level> parse_log_level(std::string_view s) {
     if (s == "info")  return logging::Level::Info;
     if (s == "warn" || s == "warning") return logging::Level::Warn;
     if (s == "error") return logging::Level::Error;
+    if (s == "fatal") return logging::Level::Fatal;
     if (s == "off" || s == "silent") return logging::Level::Off;
     return std::nullopt;
 }
@@ -139,7 +140,7 @@ int main(int argc, char** argv) {
 
     const auto level = parse_log_level(opt.log_level);
     if (!level) {
-        std::fprintf(stderr, "error: invalid --log '%s' (use trace|debug|info|warn|error|off)\n",
+        std::fprintf(stderr, "error: invalid --log '%s' (use trace|debug|info|warn|error|fatal|off)\n",
                      opt.log_level.c_str());
         return 2;
     }
@@ -163,10 +164,8 @@ int main(int argc, char** argv) {
     pulse_media::Hub media(&hub);
     Server           server;
 
-    // Request access lines are always Info; set_level() filters them.
-    // Do not pass the CLI level into middleware.log_level — that re-tags
-    // every request as warn/error and makes --log warn still spam access logs.
-    if (*level <= logging::Level::Info) {
+    // Access log: 2xx/3xx → Info, 4xx → Warn, 5xx → Error (filtered by set_level).
+    if (*level != logging::Level::Off) {
         server.Use(logging::middleware());
     }
 
@@ -187,7 +186,7 @@ int main(int argc, char** argv) {
 
     const std::string web = find_web_root();
     if (!fs::exists(fs::path(web) / "index.html")) {
-        logging::error("UI not found at {}/index.html — run ./run.sh", web);
+        logging::fatal("UI not found at {}/index.html — run ./run.sh", web);
         return 1;
     }
     server.Use(static_files::serve(web, {.mount = "/", .fallthrough = true, .cache_max_age = 0}));
@@ -201,7 +200,7 @@ int main(int argc, char** argv) {
     });
 
     if (!server.Run(opt.host, static_cast<std::uint16_t>(opt.port))) {
-        logging::error("failed to start: {}", server.last_error());
+        logging::fatal("failed to start: {}", server.last_error());
         return 1;
     }
     logging::info("Ripple on http://{}:{}  (web={})", opt.host, opt.port, web);
